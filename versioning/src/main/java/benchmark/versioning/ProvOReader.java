@@ -1,13 +1,13 @@
 package benchmark.versioning;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -18,7 +18,12 @@ import org.apache.jena.rdf.model.ResIterator;
 import org.apache.jena.rdf.model.Resource;
 import org.apache.jena.rdf.model.Statement;
 import org.apache.jena.rdf.model.StmtIterator;
+import org.apache.jena.riot.Lang;
 import org.apache.jena.riot.RDFDataMgr;
+import org.apache.jena.riot.RiotException;
+import org.apache.jena.sparql.core.DatasetGraph;
+import org.apache.jena.sparql.core.DatasetGraphFactory;
+import org.apache.jena.sparql.core.Quad;
 import org.apache.jena.vocabulary.RDF;
 import org.apache.jena.vocabulary.RDFS;
 
@@ -36,8 +41,8 @@ import org.apache.jena.vocabulary.RDFS;
  *   <li>the global merge policy is the {@code prov:SoftwareAgent} in the
  *       {@link ProvOWriter#AGENT_NS} namespace.</li>
  * </ul>
- * The RDF dataset S(v) of each version is loaded from its dedicated export
- * file ({@code <id>.nq}, written by
+ * The RDF dataset S(v) of each version is loaded (with Jena) from its
+ * dedicated N-Quads export file ({@code <id>.nq}, written by
  * {@link VersionGraphWriter#writeEachVersionToDirectory}) located next to
  * the provenance file.
  * <p>
@@ -192,31 +197,24 @@ public final class ProvOReader {
 
     /**
      * Parses a version dataset file written by
-     * {@link VersionGraphWriter#writeEachVersionToDirectory}: full-line
-     * {@code #} comments followed by N-Quads-style lines
-     * ({@code subject predicate object graphName .}). The object may contain
-     * spaces (e.g. a quoted literal): it spans all the tokens between the
-     * predicate and the graph name.
+     * {@link VersionGraphWriter#writeEachVersionToDirectory} as N-Quads,
+     * using Apache Jena. The {@code #} comment header is skipped by the
+     * N-Quads parser.
      */
     private static Set<Quad> readDataset(Path file) throws IOException {
         if (!Files.isRegularFile(file)) {
             throw new IOException("Missing version dataset file: " + file);
         }
+        DatasetGraph dsg = DatasetGraphFactory.createGeneral();
+        try {
+            RDFDataMgr.read(dsg, file.toUri().toString(), Lang.NQUADS);
+        } catch (RiotException e) {
+            throw new IOException("Invalid N-Quads in version dataset file " + file, e);
+        }
         Set<Quad> quads = new HashSet<>();
-        int lineNo = 0;
-        for (String raw : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-            lineNo++;
-            String line = raw.trim();
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
-            String[] tokens = line.split("\\s+");
-            if (tokens.length < 5 || !tokens[tokens.length - 1].equals(".")) {
-                throw new IOException("Invalid quad line (" + file + ", line " + lineNo
-                        + "): expected 'subject predicate object graphName .'");
-            }
-            String object = String.join(" ", List.of(tokens).subList(2, tokens.length - 2));
-            quads.add(new Quad(tokens[0], tokens[1], object, tokens[tokens.length - 2]));
+        Iterator<Quad> it = dsg.find();
+        while (it.hasNext()) {
+            quads.add(it.next());
         }
         return quads;
     }

@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
+import org.apache.jena.sparql.core.Quad;
+
 /**
  * Generates a version graph from a handful of parameters, instead of reading
  * it from a file: number of versions, branches and merges, size of the
@@ -32,7 +34,8 @@ import java.util.Set;
  *       {@code evolutionQuads - evolutionQuads / 2} fresh quads.</li>
  * </ul>
  * Transitions are named {@code V1..Vn} and merges {@code M1..Mm}, in
- * creation order.
+ * creation order. Fresh quads are BSBM-flavored Apache Jena {@link Quad}s
+ * (see {@link Vocabulary}) rotating over the three named graphs.
  * <p>
  * The generation is deterministic for a given seed, and the DAG structure
  * does not depend on the merge policy: two independent random streams are
@@ -42,12 +45,6 @@ import java.util.Set;
  * the merges differ.
  */
 public final class VersionGraphGenerator {
-
-    // Named graphs of the generated quads (BSBM-flavored). They are IRIs,
-    // deliberately independent of the version identifiers.
-    public static final String GRAPH_PRODUCTS = "http://example.org/graph/products";
-    public static final String GRAPH_OFFERS = "http://example.org/graph/offers";
-    public static final String GRAPH_REVIEWS = "http://example.org/graph/reviews";
 
     /**
      * The generation parameters.
@@ -192,16 +189,24 @@ public final class VersionGraphGenerator {
     }
 
     /**
-     * A fresh, never-seen-before quad. Quads rotate over the three named
-     * graphs and are fully determined by an internal counter, so the
-     * additions do not depend on any random stream.
+     * A fresh, never-seen-before quad, built with Apache Jena. Quads rotate
+     * over the three named graphs and are fully determined by an internal
+     * counter, so the additions do not depend on any random stream.
      */
     private Quad freshQuad() {
         long n = quadCounter++;
         return switch ((int) (n % 3)) {
-            case 0 -> new Quad("ex:product" + n, "rdf:type", "bsbm:Product", GRAPH_PRODUCTS);
-            case 1 -> new Quad("ex:offer" + n, "bsbm:price", "\"" + (10 + n * 7 % 90) + ".0\"", GRAPH_OFFERS);
-            default -> new Quad("ex:review" + n, "bsbm:reviewFor", "ex:product" + (n - 2), GRAPH_REVIEWS);
+            case 0 -> Vocabulary.quad(
+                    Vocabulary.iri(Vocabulary.GRAPH_PRODUCTS),
+                    Vocabulary.ex("product" + n), Vocabulary.rdfType(), Vocabulary.bsbm("Product"));
+            case 1 -> Vocabulary.quad(
+                    Vocabulary.iri(Vocabulary.GRAPH_OFFERS),
+                    Vocabulary.ex("offer" + n), Vocabulary.bsbm("price"),
+                    Vocabulary.literal((10 + n * 7 % 90) + ".0"));
+            default -> Vocabulary.quad(
+                    Vocabulary.iri(Vocabulary.GRAPH_REVIEWS),
+                    Vocabulary.ex("review" + n), Vocabulary.bsbm("reviewFor"),
+                    Vocabulary.ex("product" + (n - 2)));
         };
     }
 }

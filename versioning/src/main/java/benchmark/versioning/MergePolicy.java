@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.BinaryOperator;
 
+import org.apache.jena.sparql.core.Quad;
+
 public enum MergePolicy {
     UNION(MergePolicy::union),
     INTERSECTION(MergePolicy::intersection),

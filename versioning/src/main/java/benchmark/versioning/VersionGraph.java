@@ -3,6 +3,8 @@ package benchmark.versioning;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import org.apache.jena.sparql.core.Quad;
+
 public class VersionGraph {
     private final Map<String, Version> versions = new HashMap<>();
     private final MergePolicy globalPolicy;

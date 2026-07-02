@@ -1,17 +1,26 @@
 package benchmark.versioning;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.List;
-import java.util.stream.Collectors;
+
+import org.apache.jena.rdf.model.Model;
+import org.apache.jena.rdf.model.ModelFactory;
+import org.apache.jena.rdf.model.Property;
+import org.apache.jena.rdf.model.Resource;
+import org.apache.jena.riot.Lang;
+import org.apache.jena.riot.RDFDataMgr;
+import org.apache.jena.vocabulary.RDF;
+import org.apache.jena.vocabulary.RDFS;
 
 /**
  * Serializes a version graph as an RDF graph using the W3C PROV-O ontology
  * (<a href="https://www.w3.org/TR/prov-o/">https://www.w3.org/TR/prov-o/</a>),
- * written in Turtle syntax.
+ * built and written in Turtle with Apache Jena.
  * <p>
  * Mapping of the formal model onto PROV-O:
  * <ul>
@@ -38,6 +47,8 @@ public final class ProvOWriter {
     public static final String ACTIVITY_NS = "http://example.org/versioning/activity/";
     /** Namespace of the agents (the global merge policy). */
     public static final String AGENT_NS = "http://example.org/versioning/agent/";
+    /** The W3C PROV-O namespace. */
+    private static final String PROV_NS = "http://www.w3.org/ns/prov#";
 
     private ProvOWriter() {
         // utility class
@@ -70,83 +81,86 @@ public final class ProvOWriter {
     }
 
     /**
-     * Serializes the PROV-O description of the given versions to Turtle.
+     * Serializes the PROV-O description of the given versions to Turtle,
+     * using Apache Jena.
      */
     public static String serialize(Collection<Version> versions, MergePolicy policy) {
-        List<Version> ordered = VersionGraphWriter.topologicalOrder(versions);
-        StringBuilder sb = new StringBuilder();
+        Model model = buildModel(versions, policy);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        RDFDataMgr.write(out, model, Lang.TURTLE);
+        return out.toString(StandardCharsets.UTF_8);
+    }
 
-        sb.append("@prefix prov: <http://www.w3.org/ns/prov#> .\n");
-        sb.append("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n");
-        sb.append("@prefix ver:  <").append(VERSION_NS).append("> .\n");
-        sb.append("@prefix act:  <").append(ACTIVITY_NS).append("> .\n");
-        sb.append("@prefix agt:  <").append(AGENT_NS).append("> .\n");
-        sb.append('\n');
-        sb.append("# PROV-O description of the RDF version graph\n");
-        sb.append("# Global merge policy: ").append(policy).append('\n');
+    /**
+     * Builds the Jena model describing the version graph in PROV-O.
+     */
+    private static Model buildModel(Collection<Version> versions, MergePolicy policy) {
+        List<Version> ordered = VersionGraphWriter.topologicalOrder(versions);
+
+        Model model = ModelFactory.createDefaultModel();
+        model.setNsPrefix("prov", PROV_NS);
+        model.setNsPrefix("rdfs", RDFS.getURI());
+        model.setNsPrefix("ver", VERSION_NS);
+        model.setNsPrefix("act", ACTIVITY_NS);
+        model.setNsPrefix("agt", AGENT_NS);
+
+        Resource entityType = model.createResource(PROV_NS + "Entity");
+        Resource activityType = model.createResource(PROV_NS + "Activity");
+        Resource softwareAgentType = model.createResource(PROV_NS + "SoftwareAgent");
+        Property wasDerivedFrom = model.createProperty(PROV_NS + "wasDerivedFrom");
+        Property wasGeneratedBy = model.createProperty(PROV_NS + "wasGeneratedBy");
+        Property used = model.createProperty(PROV_NS + "used");
+        Property generated = model.createProperty(PROV_NS + "generated");
+        Property wasAssociatedWith = model.createProperty(PROV_NS + "wasAssociatedWith");
 
         // The global merge policy, applied to every merge, is the agent.
-        String policyAgent = "agt:policy-" + policy.name();
-        sb.append('\n');
-        sb.append(policyAgent).append(" a prov:SoftwareAgent ;\n");
-        sb.append("    rdfs:label \"Global merge policy ").append(policy.name()).append("\" .\n");
+        Resource policyAgent = model.createResource(AGENT_NS + "policy-" + policy.name())
+                .addProperty(RDF.type, softwareAgentType)
+                .addProperty(RDFS.label, "Global merge policy " + policy.name());
 
         for (Version v : ordered) {
-            String entity = entityIri(v);
+            Resource entity = model.createResource(entityIri(v))
+                    .addProperty(RDF.type, entityType)
+                    .addProperty(RDFS.label, "Version " + v.getId())
+                    .addProperty(RDFS.comment, kindOf(v) + " node with " + v.getData().size() + " quad(s)");
+
             List<Version> parents = v.getParents();
-
-            sb.append('\n');
-            sb.append(entity).append(" a prov:Entity ;\n");
-            sb.append("    rdfs:label ").append(literal("Version " + v.getId())).append(" ;\n");
-            sb.append("    rdfs:comment ").append(literal(kindOf(v) + " node with "
-                    + v.getData().size() + " quad(s)"));
-            if (!parents.isEmpty()) {
-                sb.append(" ;\n");
-                sb.append("    prov:wasDerivedFrom ")
-                        .append(parents.stream().map(ProvOWriter::entityIri)
-                                .collect(Collectors.joining(" , ")))
-                        .append(" ;\n");
-                sb.append("    prov:wasGeneratedBy ").append(activityIri(v));
+            if (parents.isEmpty()) {
+                continue;
             }
-            sb.append(" .\n");
 
-            if (!parents.isEmpty()) {
-                boolean merge = parents.size() >= 2;
-                sb.append('\n');
-                sb.append(activityIri(v)).append(" a prov:Activity ;\n");
-                sb.append("    rdfs:label ").append(literal(
-                        (merge ? "Merge (" + parents.size() + " parents, policy " + policy.name() + ")"
-                                : "Transition") + " producing " + v.getId())).append(" ;\n");
-                sb.append("    prov:used ")
-                        .append(parents.stream().map(ProvOWriter::entityIri)
-                                .collect(Collectors.joining(" , ")))
-                        .append(" ;\n");
-                sb.append("    prov:generated ").append(entity);
-                if (merge) {
-                    sb.append(" ;\n");
-                    sb.append("    prov:wasAssociatedWith ").append(policyAgent);
-                }
-                sb.append(" .\n");
+            boolean merge = parents.size() >= 2;
+            Resource activity = model.createResource(activityIri(v))
+                    .addProperty(RDF.type, activityType)
+                    .addProperty(RDFS.label,
+                            (merge ? "Merge (" + parents.size() + " parents, policy " + policy.name() + ")"
+                                    : "Transition") + " producing " + v.getId());
+
+            for (Version parent : parents) {
+                Resource parentEntity = model.createResource(entityIri(parent));
+                entity.addProperty(wasDerivedFrom, parentEntity);
+                activity.addProperty(used, parentEntity);
+            }
+            entity.addProperty(wasGeneratedBy, activity);
+            activity.addProperty(generated, entity);
+            if (merge) {
+                activity.addProperty(wasAssociatedWith, policyAgent);
             }
         }
-        return sb.toString();
+        return model;
     }
 
     private static String entityIri(Version v) {
-        return "ver:" + localName(v.getId());
+        return VERSION_NS + localName(v.getId());
     }
 
     private static String activityIri(Version v) {
         String kind = v.getParents().size() >= 2 ? "merge-" : "transition-";
-        return "act:" + kind + localName(v.getId());
+        return ACTIVITY_NS + kind + localName(v.getId());
     }
 
     private static String localName(String id) {
         return id.replaceAll("[^A-Za-z0-9._-]", "_");
-    }
-
-    private static String literal(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private static String kindOf(Version v) {

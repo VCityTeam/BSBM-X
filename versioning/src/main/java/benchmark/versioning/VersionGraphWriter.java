@@ -1,5 +1,6 @@
 package benchmark.versioning;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -17,17 +18,32 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.apache.jena.riot.Lang;
+import org.apache.jena.riot.RDFDataMgr;
+import org.apache.jena.sparql.core.DatasetGraph;
+import org.apache.jena.sparql.core.DatasetGraphFactory;
+import org.apache.jena.sparql.core.Quad;
+
 /**
- * Writes all the versions of a version graph into a specific file.
+ * Writes the versions of a version graph to disk. The RDF dataset S(v) of
+ * each version is serialized as <b>N-Quads by Apache Jena</b>
+ * ({@code <subject> <predicate> <object> <graphName> .} with full IRIs),
+ * so the per-version files can be parsed back with Jena
+ * (see {@link ProvOReader}).
  * <p>
- * The output is a plain-text, human-readable export: a small header
- * (global merge policy, number of versions) followed by one section per
- * version listing its kind (root / transition / merge), its parents
- * pre(v) and its full RDF dataset S(v) as N-Quads-style lines
- * ({@code subject predicate object graphName .}).
- * <p>
+ * Two layouts are supported:
+ * <ul>
+ *   <li>{@link #writeEachVersionToDirectory} writes <b>one N-Quads file per
+ *       version</b> ({@code <versionId>.nq}); this is the layout reloaded by
+ *       {@link ProvOReader};</li>
+ *   <li>{@link #writeToFile} / {@link #serialize} write a single
+ *       human-readable report of <b>all versions</b>, each section carrying
+ *       its kind, parents and dataset.</li>
+ * </ul>
  * Versions are written in topological order (parents before children) and
- * quads are sorted, so the export is deterministic and diff-friendly.
+ * the N-Quads lines are sorted, so the export is deterministic and
+ * diff-friendly. A short {@code #} comment header (skipped by the Jena
+ * N-Quads parser on read) documents each version.
  */
 public final class VersionGraphWriter {
 
@@ -68,12 +84,12 @@ public final class VersionGraphWriter {
 
     /**
      * Writes <b>each version in a different file</b> inside the given
-     * directory: one file per version, named {@code <versionId>.nq}
+     * directory: one N-Quads file per version, named {@code <versionId>.nq}
      * (the version id is sanitized so it is a safe file name).
      * <p>
-     * Each file contains a small comment header (version id, global merge
-     * policy, kind, parents, quad count) followed by the full RDF dataset
-     * S(v) of the version as sorted N-Quads-style lines.
+     * Each file contains a small {@code #} comment header (version id, global
+     * merge policy, kind, parents, quad count) followed by the full RDF
+     * dataset S(v) as sorted N-Quads lines.
      *
      * @return the list of files written, in topological order.
      */
@@ -99,23 +115,21 @@ public final class VersionGraphWriter {
     }
 
     /**
-     * Serializes a single version to the content of its dedicated file.
+     * Serializes a single version to the content of its dedicated N-Quads
+     * file: a {@code #} comment header followed by the sorted N-Quads lines
+     * of its RDF dataset.
      */
     public static String serializeVersion(Version v, MergePolicy policy) {
         StringBuilder sb = new StringBuilder();
-        sb.append("# ===== RDF version export =====\n");
+        sb.append("# ===== RDF version export (N-Quads) =====\n");
         sb.append("# version: ").append(v.getId()).append('\n');
         sb.append("# global merge policy: ").append(policy).append('\n');
         sb.append("# kind: ").append(kindOf(v)).append('\n');
-        sb.append("# parents: ").append(v.getParents().isEmpty()
-                ? "(none)"
-                : v.getParents().stream().map(Version::getId).collect(Collectors.joining(", ")))
-                .append('\n');
+        sb.append("# parents: ").append(parentsOf(v)).append('\n');
         sb.append("# quads: ").append(v.getData().size()).append('\n');
-        v.getData().stream()
-                .map(VersionGraphWriter::toLine)
-                .sorted()
-                .forEach(line -> sb.append(line).append('\n'));
+        for (String line : nquadLines(v.getData())) {
+            sb.append(line).append('\n');
+        }
         return sb.toString();
     }
 
@@ -135,14 +149,16 @@ public final class VersionGraphWriter {
     }
 
     /**
-     * Serializes all the versions of the graph to the export text format.
+     * Serializes all the versions of the graph to the human-readable report.
      */
     public static String serialize(VersionGraph graph) {
         return serialize(graph.getVersions(), graph.getGlobalPolicy());
     }
 
     /**
-     * Serializes all the given versions to the export text format.
+     * Serializes all the given versions to the human-readable report. Each
+     * section lists a version's kind, parents and its RDF dataset as sorted
+     * N-Quads lines (serialized by Apache Jena).
      */
     public static String serialize(Collection<Version> versions, MergePolicy policy) {
         List<Version> ordered = topologicalOrder(versions);
@@ -154,17 +170,30 @@ public final class VersionGraphWriter {
             sb.append('\n');
             sb.append("=== Version ").append(v.getId()).append(" ===\n");
             sb.append("kind: ").append(kindOf(v)).append('\n');
-            sb.append("parents: ").append(v.getParents().isEmpty()
-                    ? "(none)"
-                    : v.getParents().stream().map(Version::getId).collect(Collectors.joining(", ")))
-                    .append('\n');
+            sb.append("parents: ").append(parentsOf(v)).append('\n');
             sb.append("quads: ").append(v.getData().size()).append('\n');
-            v.getData().stream()
-                    .map(VersionGraphWriter::toLine)
-                    .sorted()
-                    .forEach(line -> sb.append(line).append('\n'));
+            for (String line : nquadLines(v.getData())) {
+                sb.append(line).append('\n');
+            }
         }
         return sb.toString();
+    }
+
+    /**
+     * Serializes a set of quads to sorted N-Quads lines using Apache Jena.
+     */
+    private static List<String> nquadLines(Set<Quad> quads) {
+        DatasetGraph dsg = DatasetGraphFactory.createGeneral();
+        for (Quad q : quads) {
+            dsg.add(q);
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        RDFDataMgr.write(out, dsg, Lang.NQUADS);
+        return out.toString(StandardCharsets.UTF_8).lines()
+                .map(String::strip)
+                .filter(line -> !line.isEmpty())
+                .sorted()
+                .collect(Collectors.toList());
     }
 
     private static void write(String content, Path file, boolean append) throws IOException {
@@ -190,8 +219,10 @@ public final class VersionGraphWriter {
         return "merge (" + parents + " parents)";
     }
 
-    private static String toLine(Quad q) {
-        return q.getSubject() + " " + q.getPredicate() + " " + q.getObject() + " " + q.getGraphName() + " .";
+    private static String parentsOf(Version v) {
+        return v.getParents().isEmpty()
+                ? "(none)"
+                : v.getParents().stream().map(Version::getId).collect(Collectors.joining(", "));
     }
 
     /**
