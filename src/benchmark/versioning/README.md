@@ -24,23 +24,32 @@ From the project root (`BSBM/`):
 # Compile
 mvn compile
 
-# Run the demonstration program
+# Run the demonstration program (default parameters)
 mvn compile exec:java
 
-# Optionally choose the directory where the versions are exported
-mvn compile exec:java -Dexec.args="my-export-dir"
-
-# Optionally also choose the version graph definition file to load
-mvn compile exec:java -Dexec.args="my-export-dir my-version-graph.txt"
+# Generate a custom graph
+mvn compile exec:java -Dexec.args="--versions 40 --branches 5 --merges 6 --initial-quads 100 --evolution 12 --seed 7"
 ```
 
-The demo graph is **not hard-coded**: it is read from a version graph definition file
-(`src/benchmark/versioning/version-graph.txt` by default, or the file given as second
-argument) — see §3.10.
+The graph is **not hard-coded and not read from a file**: it is generated from the
+program parameters (see §3.10):
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--versions <n>` | Total number of versions in the graph (root + transitions + merges). | 12 |
+| `--branches <n>` | Number of branches. | 3 |
+| `--merges <n>` | Number of merge nodes. | 2 |
+| `--initial-quads <n>` | Number of quads in the initial dataset of the root. | 20 |
+| `--evolution <n>` | Number of quads changed between two versions (deletions + additions applied by each transition). | 6 |
+| `--seed <n>` | Random seed, for reproducible graphs. | 42 |
+| `--export-dir <dir>` | Export directory. | `versions-export` |
+
+Constraints: `versions >= branches + merges`, and `branches >= 2` when `merges > 0`.
 
 For each policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) the demo:
 
-1. builds the graph from the definition file,
+1. generates the graph from the parameters (the same seed produces the same DAG for
+   every policy — only the datasets downstream of the merges differ),
 2. **exports each version in a different file** and generates the **PROV-O graph
    describing the version graph** (`provenance.ttl`),
 3. **reloads the whole version graph from the generated `provenance.ttl`** (parsed with
@@ -51,14 +60,14 @@ For each policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) the demo:
 
 The last section demonstrates the detection of a tampered merge, also through the
 PROV-O round-trip (`Tampered graph is consistent: false`).
-The export directory (`versions-export/` by default, or the directory given as first
-argument) contains one sub-directory per demo policy:
+The export directory (`versions-export/` by default, or `--export-dir`) contains one
+sub-directory per demo policy (file names shown for the default parameters):
 
 ```
 versions-export/
 ├── union/
-│   ├── V0.nq  V1.nq  V2.nq  V3.nq  M1.nq  V4.nq  M2.nq   # one file per version
-│   └── provenance.ttl                                     # PROV-O description of the DAG
+│   ├── V0.nq  V1.nq  ...  V9.nq  M1.nq  M2.nq   # one file per version
+│   └── provenance.ttl                            # PROV-O description of the DAG
 ├── intersection/            (same layout)
 ├── symmetric-difference/    (same layout)
 └── tampered/                (the negative test: a tampered merge, detected as inconsistent)
@@ -76,7 +85,7 @@ versions-export/
 | `VersionGraph` | Builds the DAG: root nodes, transition nodes (diff of additions/deletions) and merge nodes (strict application of `⊕`). |
 | `VersionConsistencyChecker` | Verifies the strict consistency of a graph (or of an arbitrary collection of versions) under a policy. |
 | `VersionGraphWriter` | Writes the versions of a graph (or of an arbitrary collection of versions) to disk: all inside a single file, or **each version in a different file**. |
-| `VersionGraphReader` | **Reads a version graph definition file** and builds the `VersionGraph` under a given policy (used by `Main` to build the demo graph instead of hard-coding it). |
+| `VersionGraphGenerator` | **Generates a version graph from parameters** (versions, branches, merges, initial dataset size, evolution per version, seed) under a given policy (used by `Main` instead of hard-coding the graph). |
 | `ProvOWriter` | Generates an **RDF graph describing the version graph using the W3C PROV-O ontology** (Turtle). |
 | `ProvOReader` | **Reads a version graph back from its PROV-O description** (`provenance.ttl`, parsed with Apache Jena) and the per-version export files (used by `Main.testPolicy` for the consistency check). |
 | `Main` | Runnable demonstration of all features. |
@@ -302,44 +311,49 @@ act:merge-M1 a prov:Activity ;
     prov:wasAssociatedWith agt:policy-UNION .
 ```
 
-### 3.10. Read a version graph from a definition file
+### 3.10. Generate a version graph from parameters
 
-`VersionGraphReader` builds a `VersionGraph` from a **plain-text definition file**, so the
-graph does not have to be hard-coded in Java. This is how `Main` builds the demo graph: it
-reads `src/benchmark/versioning/version-graph.txt` (or the file given as second program
-argument) and replays it under each policy.
+`VersionGraphGenerator` builds a `VersionGraph` from a handful of **parameters**, so the
+graph is neither hard-coded in Java nor read from a file. This is how `Main` builds the
+graph: it generates it from the program options and replays the same parameters under each
+policy.
 
 ```java
-import java.nio.file.Path;
+// versions, branches, merges, initialQuads, evolutionQuads, seed
+VersionGraphGenerator.Parameters params =
+        new VersionGraphGenerator.Parameters(12, 3, 2, 20, 6, 42);
 
-// Build the graph described in the file, under the given global policy
-VersionGraph graph = VersionGraphReader.read(Path.of("version-graph.txt"), MergePolicy.UNION);
-
-// Or parse lines already in memory (source name is only used in error messages)
-VersionGraph graph2 = VersionGraphReader.parse(lines, MergePolicy.UNION, "in-memory");
+VersionGraph graph = VersionGraphGenerator.generate(params, MergePolicy.UNION);
 ```
 
-The format is line-based; `#` starts a comment (at start of line or preceded by whitespace)
-and blank lines are ignored:
+Connection rules of the generated DAG:
 
-| Directive | Meaning |
-|---|---|
-| `root <id>` | Declare a root node (`\|pre(v)\| = 0`). |
-| `transition <id> <parentId>` | Declare a transition node (`\|pre(v)\| = 1`). |
-| `merge <id> <parent> <parent> [<parent> ...]` | Declare a merge node (≥ 2 parents, octopus merges supported). |
-| `add <subject> <predicate> <object> <graphName>` | Quad added by the pending `root`/`transition`. |
-| `delete <subject> <predicate> <object> <graphName>` | Quad deleted by the pending `transition` (not allowed for a root). |
+- the graph starts with a single root `V0` holding the initial dataset
+  (`initialQuads` fresh quads);
+- each of the `branches - 1` additional branches is opened by a **transition forking
+  from the head of a randomly chosen existing branch**;
+- the remaining transitions **advance the head of a randomly chosen branch**;
+- the merges are **evenly interleaved** among those transitions; each merge combines the
+  heads of 2 — or sometimes 3, when at least 3 branches exist (**octopus**) — randomly
+  chosen distinct branches, and becomes the new head of the first of them; the other
+  merged branches keep their heads and stay active, as in git;
+- every transition applies the evolution differential to its parent's dataset:
+  it **deletes `evolutionQuads / 2` random quads** (capped by the dataset size) and
+  **adds the remaining `evolutionQuads - evolutionQuads / 2` fresh quads**. Fresh quads
+  are BSBM-flavored (products, offers, reviews) and rotate over the three named graphs.
 
-Rules:
+Transitions are named `V1..Vn` and merges `M1..Mm`, in creation order. **The state of
+merge nodes is never generated**: it is computed by applying the global policy to the
+parents' datasets, as required by the formal model.
 
-- `add`/`delete` lines apply to the most recent `root` or `transition` directive.
-- A version must be declared **before** it is referenced as a parent.
-- The `<object>` may contain spaces (e.g. a quoted literal `"a label"`): it spans all the
-  tokens between the predicate and the graph name (the last token of the line).
-- **The state of merge nodes is never given in the file**: it is computed by applying the
-  global policy to the parents' datasets, as required by the formal model. The same file can
-  therefore be replayed under any policy — only the merge states differ.
-- Syntax errors raise an `IllegalArgumentException` with the file name and line number.
+The generation is **deterministic for a given seed**, and the DAG structure does not
+depend on the policy: two independent random streams are used, one for the structure
+(fork/branch/merge choices) and one for the data (deletion picks). The same parameters
+replayed under different policies therefore produce the same DAG — only the datasets
+downstream of the merges differ.
+
+Invalid parameters (e.g. `versions < branches + merges`, or `merges > 0` with a single
+branch) raise an `IllegalArgumentException` with an explicit message.
 
 ### 3.11. Read the version graph back from its PROV-O description
 
@@ -376,21 +390,6 @@ version dataset file is missing, if a version derives from an entity not describ
 file, or if the `prov:wasDerivedFrom` graph contains a cycle. Note that
 `prov:wasDerivedFrom` statements have set semantics, so a merge listing the same parent
 twice cannot be represented in (or read back from) PROV-O.
-
-Example (the beginning of the demo `version-graph.txt`):
-
-```
-root V0
-add ex:product1 rdf:type bsbm:Product http://example.org/graph/products
-add ex:product1 rdfs:label "Widget" http://example.org/graph/products
-add ex:offer1 bsbm:price "42.0" http://example.org/graph/offers
-
-transition V1 V0
-add ex:review1 bsbm:reviewFor ex:product1 http://example.org/graph/reviews
-delete ex:offer1 bsbm:price "42.0" http://example.org/graph/offers
-
-merge M1 V1 V2
-```
 
 ---
 
@@ -445,9 +444,9 @@ VersionGraphWriter.writeEachVersionToDirectory(graph, java.nio.file.Path.of("exp
 // Generate the PROV-O graph describing the version graph
 ProvOWriter.writeToFile(graph, java.nio.file.Path.of("export-dir/provenance.ttl"));
 
-// Or build the whole graph from a definition file instead of hard-coding it
-VersionGraph loaded = VersionGraphReader.read(
-        java.nio.file.Path.of("src/benchmark/versioning/version-graph.txt"), MergePolicy.UNION);
+// Or generate a whole graph from parameters instead of hard-coding it
+VersionGraph generated = VersionGraphGenerator.generate(
+        new VersionGraphGenerator.Parameters(12, 3, 2, 20, 6, 42), MergePolicy.UNION);
 
 // Reload the version graph from its PROV-O description (Apache Jena) and
 // verify its consistency against the policy declared in the provenance
@@ -455,7 +454,7 @@ ProvOReader.ProvenanceGraph reloaded = ProvOReader.read(java.nio.file.Path.of("e
 System.out.println(VersionConsistencyChecker.isConsistent(reloaded.versions(), reloaded.policy()));
 ```
 
-See `Main.java` for a richer scenario: three diverging branches, a binary merge, a post-merge
-transition, an octopus merge (all loaded from `version-graph.txt`, then exported, reloaded
-from the generated `provenance.ttl` and checked for consistency), and a negative test showing
-how a tampered merge is detected through the same PROV-O round-trip.
+See `Main.java` for a richer scenario: several diverging branches, binary and octopus
+merges (generated from the program parameters, then exported, reloaded from the generated
+`provenance.ttl` and checked for consistency), and a negative test showing how a tampered
+merge is detected through the same PROV-O round-trip.
