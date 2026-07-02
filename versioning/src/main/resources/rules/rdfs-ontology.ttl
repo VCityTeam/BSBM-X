@@ -1,0 +1,25 @@
+# RDFS ontology for the BSBM-flavored version content — open-world regime.
+# Deliberately made of positive axioms only (classes, domains, ranges): it
+# infers types instead of flagging problems, and therefore validates every
+# version of every merge policy. This exhibits the open-world blindness to
+# loss-type damage analyzed in Version-history-inference-validation.md §6.3:
+# compare with the closed-world verdicts of shacl-shapes.ttl on the same
+# histories.
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/> .
+
+bsbm:Product a rdfs:Class .
+bsbm:Offer   a rdfs:Class .
+bsbm:Review  a rdfs:Class .
+
+bsbm:reviewFor
+    a rdf:Property ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  bsbm:Product .
+
+bsbm:price
+    a rdf:Property ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  xsd:string .

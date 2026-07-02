@@ -1,0 +1,29 @@
+# OWL ontology for the BSBM-flavored version content — open-world regime.
+# Extends the RDFS vocabulary with negative axioms (pairwise class
+# disjointness, functional price), which is what gives the open-world
+# consistency check something to refute: see
+# Version-history-inference-validation.md §6.3 and §10 (a purely positive
+# ontology validates every merge vacuously). Note the non-UNA caveat of
+# §6.3: a functional property with two IRI values infers owl:sameAs instead
+# of an inconsistency; only provably distinct values (e.g. two different
+# literals) produce a detectable clash.
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/> .
+
+bsbm:Product a owl:Class ;
+    owl:disjointWith bsbm:Offer, bsbm:Review .
+bsbm:Offer a owl:Class ;
+    owl:disjointWith bsbm:Review .
+bsbm:Review a owl:Class .
+
+bsbm:reviewFor
+    a owl:ObjectProperty ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  bsbm:Product .
+
+bsbm:price
+    a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Offer .

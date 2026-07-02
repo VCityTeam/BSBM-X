@@ -7,7 +7,10 @@ This module (`benchmark.versioning`) implements the mathematical formalization o
 - the graph supports **multiple branches** and **n-ary merges** ("octopus" merges),
 - all merges are governed by a single **global merge policy** `⊕ ∈ {∪, ∩, Δ}`,
 - graph **consistency** can be verified: every merge node must satisfy
-  `S(v) = ⊕ S(u), u ∈ pre(v)`.
+  `S(v) = ⊕ S(u), u ∈ pre(v)`,
+- version and merge **validity** can be checked against a rule set (SHACL shapes, an RDFS or an
+  OWL ontology) by the **Inference validation** program — see §7 and the companion research
+  document [Version-history-inference-validation.md](Version-history-inference-validation.md).
 
 **All quad/triple parsing and serialization is done with [Apache Jena](https://jena.apache.org/).**
 A quad is a Jena [`org.apache.jena.sparql.core.Quad`](https://jena.apache.org/documentation/javadoc/arq/org/apache/jena/sparql/core/Quad.html)
@@ -25,8 +28,11 @@ This is a **self-contained Maven module** at the root of the repository, with th
 versioning/
 ├── pom.xml
 ├── README.md
-├── src/main/java/benchmark/versioning/   # the program
-└── src/test/java/benchmark/versioning/    # the JUnit 5 tests
+├── Generation-formalisation.md                  # formal model of the version graph (§1–§4)
+├── Version-history-inference-validation.md      # formal model of inference validation (§5–§12)
+├── src/main/java/benchmark/versioning/          # the programs
+├── src/main/resources/rules/                    # example rule sets (SHACL, RDFS, OWL)
+└── src/test/java/benchmark/versioning/          # the JUnit 5 tests
 ```
 
 The rest of the BSBM sources keep the legacy Ant build (`../build.xml`) and its jars under `../lib/`;
@@ -65,6 +71,8 @@ program parameters (see §4.10):
 | `--evolution <n>` | Number of quads changed between two versions (deletions + additions applied by each transition). | 6 |
 | `--seed <n>` | Random seed, for reproducible graphs. | 42 |
 | `--export-dir <dir>` | Export directory. | `versions-export` |
+| `--rules <file>` | Also run the **Inference validation** (§7) of each exported history against these rules (SHACL shapes or an RDFS/OWL ontology) and print its summary. | (none) |
+| `--rule-language <l>` | `shacl` \| `rdfs` \| `owl` \| `auto` — how to read the rules file. | `auto` (detected) |
 
 Constraints: `versions >= branches + merges`, and `branches >= 2` when `merges > 0`.
 
@@ -104,6 +112,7 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 |---|---|
 | `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless and the reloaded graph is consistent under the declared policy. (Formerly `Main.testPolicy`.) |
 | `InconsistencyDetectionTest` | Builds a merge tampered with a parasitic quad (violating the global UNION policy), exports it, reloads it and asserts it is detected as inconsistent through the PROV-O round-trip. (Formerly `Main.testInconsistencyDetection`.) |
+| `InferenceValidationTest` | Executable version of the worked micro-examples of [Version-history-inference-validation.md](Version-history-inference-validation.md) §12: each merge policy creating (`EMERGENT_VIOLATION`), propagating (`INHERITED_VIOLATION`) or repairing (`REPAIRED`) invalidity under SHACL (closed world) and RDFS/OWL (open world) rules, plus rule-language detection and the example rule files run against generated histories. |
 
 ---
 
@@ -120,7 +129,10 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | `VersionGraphGenerator` | **Generates a version graph from parameters** (versions, branches, merges, initial dataset size, evolution per version, seed) under a given policy. |
 | `ProvOWriter` | Generates, with Jena, an **RDF graph describing the version graph using the W3C PROV-O ontology** (Turtle). |
 | `ProvOReader` | **Reads a version graph back from its PROV-O description** (`provenance.ttl`, parsed with Apache Jena) and the per-version N-Quads files. |
-| `Main` | Runnable demonstration program (generate → export → reload → summarize). |
+| `Main` | Runnable demonstration program (generate → export → reload → summarize, optionally validate with `--rules`). |
+| `RuleLanguage` | The rule languages of the Inference validation (`SHACL`, `RDFS`, `OWL`), each tied to its world assumption (closed/open), with namespace-based auto-detection. |
+| `InferenceValidator` | The **Inference validation engine**: validates every version against a rule set and classifies every merge by the outcome taxonomy (`PRESERVED`, `EMERGENT_VIOLATION`, `REPAIRED`, `INHERITED_VIOLATION`). |
+| `InferenceValidationMain` | Runnable **Inference validation** program: reloads exported histories and prints the per-version verdicts, the merge classification and the summary (§7). |
 
 ### About quads and named graphs
 
@@ -381,7 +393,72 @@ significant for `SYMMETRIC_DIFFERENCE`.
 
 ---
 
-## 7. Complete example
+## 7. Inference validation (rules, world assumptions, merge validity)
+
+The **Inference validation** program checks the validity of **all versions** of an exported
+history against a rule set, and classifies every **merge**. Its formal foundations — what
+"valid" means per rule language and world assumption, and which merge policy endangers which
+constraint family — are developed in
+[Version-history-inference-validation.md](Version-history-inference-validation.md), which extends
+the formalization of [Generation-formalisation.md](Generation-formalisation.md).
+
+```bash
+# 1. Generate and export the three policy histories (once)
+mvn compile exec:java
+
+# 2. Validate every exported policy sub-directory against the example SHACL shapes
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -Dexec.args="--rules src/main/resources/rules/shacl-shapes.ttl --dir versions-export"
+
+# Or check open-world consistency of one directory against the OWL ontology
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -Dexec.args="--rules src/main/resources/rules/owl-ontology.ttl --language owl --dir versions-export/union"
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--rules <file>` | The rule set: SHACL shapes or an RDFS/OWL ontology (Turtle/RDF). **Required.** | — |
+| `--language <l>` | `shacl` \| `rdfs` \| `owl` \| `auto`. | `auto` (detected from the namespaces) |
+| `--dir <dir>` | Directory to validate: either it contains `provenance.ttl` + `<id>.nq` files, or each of its sub-directories does (the per-policy layout written by `Main`). | `versions-export` |
+
+Exit code: `0` — every version valid, `1` — at least one violation (CI-friendly), `2` — usage
+error.
+
+The rule language decides the **regime and world assumption**:
+
+| Language | Regime | World assumption | Detects |
+|---|---|---|---|
+| `SHACL` | constraint validation (Jena SHACL engine) | **closed world** | loss damage (missing witnesses, dangling references — typical of `∩`/`Δ` merges) *and* conflict damage (`sh:maxCount`, …) |
+| `RDFS` | consistency of the inference model (Jena RDFS reasoner) | **open world** | only datatype clashes; blind to loss |
+| `OWL` | consistency of the inference model (Jena OWL reasoner) | **open world** | conflict damage via negative axioms (`owl:disjointWith`, functional properties — typical of `∪`/`Δ` merges); blind to loss |
+
+Every merge node is classified by crossing the parents' validity with the merge's validity:
+
+| Outcome | Parents | Merge | Meaning |
+|---|---|---|---|
+| `PRESERVED` | all valid | valid | nothing to report |
+| `EMERGENT_VIOLATION` | all valid | invalid | the violation was **manufactured by the merge policy itself** |
+| `REPAIRED` | some invalid | valid | the policy dropped the offending statements |
+| `INHERITED_VIOLATION` | some invalid | invalid | the violation was propagated from a branch |
+
+Three example rule files over the generator's BSBM-flavored vocabulary live in
+`src/main/resources/rules/`: `shacl-shapes.ttl` (referential integrity of reviews + price upper
+bounds; with the default generation parameters the deleting transitions and the `∩`/`Δ` merges
+produce dangling references that it flags), `rdfs-ontology.ttl` (deliberately all-positive:
+validates everything, exhibiting open-world blindness to loss) and `owl-ontology.ttl` (adds
+disjointness and a functional price, giving the open-world regime something to refute).
+
+Programmatic use (see `InferenceValidator`):
+
+```java
+InferenceValidator validator = InferenceValidator.fromFile(Path.of("rules.ttl")); // auto-detects
+InferenceValidator.VersionValidity verdict = validator.validate(version);
+InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
+report.merges().forEach(m -> System.out.println(m.mergeId() + " -> " + m.outcome()));
+System.out.println(report.summary());
+```
+
+---
+
+## 8. Complete example
 
 ```java
 import benchmark.versioning.*;

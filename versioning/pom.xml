@@ -22,6 +22,9 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>
         <jena.version>5.5.0</jena.version>
+        <!-- Default main class of exec:java; override on the command line
+             with -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -->
+        <exec.mainClass>benchmark.versioning.Main</exec.mainClass>
         <junit.version>5.11.4</junit.version>
         <junit.platform.version>1.11.4</junit.platform.version>
     </properties>
@@ -32,6 +35,13 @@
         <dependency>
             <groupId>org.apache.jena</groupId>
             <artifactId>jena-arq</artifactId>
+            <version>${jena.version}</version>
+        </dependency>
+        <!-- Jena SHACL engine, used by the Inference validation program to
+             validate versions against SHACL shapes (closed-world regime). -->
+        <dependency>
+            <groupId>org.apache.jena</groupId>
+            <artifactId>jena-shacl</artifactId>
             <version>${jena.version}</version>
         </dependency>
         <!-- SLF4J binding so Jena does not warn about a missing provider. -->
@@ -84,14 +94,12 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
             </plugin>
-            <!-- Run the demo with: mvn compile exec:java -->
+            <!-- Run the demo with: mvn compile exec:java (the main class comes
+                 from the exec.mainClass property above). -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
-                <configuration>
-                    <mainClass>benchmark.versioning.Main</mainClass>
-                </configuration>
             </plugin>
         </plugins>
     </build>
