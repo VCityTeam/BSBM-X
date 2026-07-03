@@ -182,8 +182,9 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 
 | Test | Role |
 |---|---|
-| `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless and the reloaded graph is consistent under the declared policy. (Formerly `Main.testPolicy`.) |
+| `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless (datasets **and** PROV-O lifecycle instants) and the reloaded graph is consistent under the declared policy. (Formerly `Main.testPolicy`.) |
 | `InconsistencyDetectionTest` | Builds a merge tampered with a parasitic quad (violating the global UNION policy), exports it, reloads it and asserts it is detected as inconsistent through the PROV-O round-trip. (Formerly `Main.testInconsistencyDetection`.) |
+| `VersionTimestampsTest` | The PROV-O lifecycle instants (§5.8): generated graphs obey the four generation/invalidation rules for many seeds, a hand-built diamond gets the expected instants, merging a version with its own child is rejected as unschedulable, and the consistency checker detects every kind of timestamp violation. |
 | `InferenceValidationTest` | Executable version of the worked micro-examples of [Version-history-inference-validation.md](Version-history-inference-validation.md) §12: each merge policy creating (`EMERGENT_VIOLATION`), propagating (`INHERITED_VIOLATION`) or repairing (`REPAIRED`) invalidity under SHACL (closed world) and RDFS/OWL (open world) rules, plus rule-language detection and the example rule files run against generated histories. |
 | `InferredKnowledgeTest` | The **inferred knowledge** of a version and its `<id>-<rdfs\|owl>-infered.nq` export files (§7): RDFS domain/range typing, OWL `owl:sameAs` from a functional property, how `∪` accumulates and `∩` loses the branches' inferences, that SHACL entails nothing, and that the inferred files parse as N-Quads without disturbing the PROV-O round-trip. |
 | `InferenceValidationMainTest` | The Inference validation **program**: the `--policy` parameter (selects the history by the merge policy read from `provenance.ttl`), the inferred-knowledge files it materializes (RDFS/OWL yes, SHACL no), and the exit codes (including `2` on usage errors and unmatched policies). |
@@ -195,10 +196,11 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | Class | Role |
 |---|---|
 | `Vocabulary` | Central definition of the RDF vocabulary (the `ex:`, `bsbm:`, `rdf:` namespaces and the three named graphs), and factory helpers building Jena `Node`s and `Quad`s. The single place where domain terms become Jena nodes. |
-| `Version` | A node `v ∈ V` of the DAG: an id, an immutable RDF dataset `S(v)` (a `Set<Quad>` of Jena quads), and the list of its parents `pre(v)`. |
+| `Version` | A node `v ∈ V` of the DAG: an id, an immutable RDF dataset `S(v)` (a `Set<Quad>` of Jena quads), the list of its parents `pre(v)`, and its PROV-O lifecycle instants (`prov:generatedAtTime`, `prov:invalidatedAtTime`). |
+| `VersionTimestamps` | Assigns the PROV-O lifecycle instants of a DAG (§5.8): every version generated strictly after its parents, all versions following a fork generated at the same instant (= the fork's invalidation instant), final versions still valid; also the schedulability check used by the generator before creating a merge. |
 | `MergePolicy` | The global operator `⊕`: `UNION`, `INTERSECTION` or `SYMMETRIC_DIFFERENCE`. Commutative and associative, hence n-ary merges are well defined. |
 | `VersionGraph` | Builds the DAG: root nodes, transition nodes (diff of additions/deletions) and merge nodes (strict application of `⊕`). |
-| `VersionConsistencyChecker` | Verifies the strict consistency of a graph (or of an arbitrary collection of versions) under a policy. |
+| `VersionConsistencyChecker` | Verifies the strict consistency of a graph (or of an arbitrary collection of versions) under a policy, including the PROV-O generation/invalidation rules of the lifecycle instants when present. |
 | `VersionGraphWriter` | Writes the versions of a graph to disk with Jena: **one N-Quads file per version**, or a single human-readable report of all versions. |
 | `VersionGraphGenerator` | **Generates a version graph from parameters** (versions, branches, merges, initial dataset size, evolution per version, seed) under a given policy. |
 | `ProvOWriter` | Generates, with Jena, an **RDF graph describing the version graph using the W3C PROV-O ontology** (Turtle). |
@@ -370,16 +372,41 @@ Mapping of the formal model onto PROV-O:
 | Merge node (`\|pre(v)\| ≥ 2`) | `act:merge-<id> a prov:Activity ; prov:used` all parents; `prov:wasAssociatedWith` the policy agent |
 | Global merge policy `⊕` | `agt:policy-<POLICY> a prov:SoftwareAgent` |
 | Root node (`\|pre(v)\| = 0`) | plain `prov:Entity` with no generation activity |
+| Generation instant of `v` | `ver:v prov:generatedAtTime "<t>"^^xsd:dateTime` |
+| Invalidation instant of `v` | `ver:v prov:invalidatedAtTime "<t'>"^^xsd:dateTime`, only when `v` has followers |
+
+The lifecycle instants (assigned by `VersionTimestamps` once the DAG is built) follow four
+rules:
+
+1. a version is **generated at the time it was programmatically generated**: the instants are
+   anchored at the wall-clock instant the generation ran, and advance by one second per
+   generation level (so every version is generated **strictly after** its parents, as PROV
+   derivations require);
+2. a version is **invalidated at the instant its following versions are generated**;
+3. **all versions following a fork node are generated at the same instant** — mandatory,
+   otherwise rule 2 would need several invalidation instants for the fork node, which the
+   OWL-time/PROV model of `prov:invalidatedAtTime` (a single invalidation event per entity)
+   forbids;
+4. **final versions are still valid**: they carry no `prov:invalidatedAtTime`.
 
 The IRIs minted for versions (`http://example.org/versioning/version/`), activities and
 agents live in their own namespaces, distinct from the named graphs used inside the RDF
 datasets `S(v)`. Excerpt of the generated Turtle:
 
 ```turtle
+ver:V1  a                       prov:Entity ;
+        rdfs:label              "Version V1" ;
+        rdfs:comment            "transition node with 20 quad(s)" ;
+        prov:generatedAtTime    "2026-07-03T16:25:23Z"^^xsd:dateTime ;
+        prov:invalidatedAtTime  "2026-07-03T16:25:24Z"^^xsd:dateTime ;
+        prov:wasDerivedFrom     ver:V0 ;
+        prov:wasGeneratedBy     act:transition-V1 .
+
 ver:M1  a                    prov:Entity ;
         rdfs:label           "Version M1" ;
         rdfs:comment         "merge node with 5 quad(s)" ;
-        prov:wasDerivedFrom  ver:V1 , ver:V2 ;
+        prov:generatedAtTime "2026-07-03T16:25:28Z"^^xsd:dateTime ;   # final version: still valid,
+        prov:wasDerivedFrom  ver:V1 , ver:V2 ;                        # no prov:invalidatedAtTime
         prov:wasGeneratedBy  act:merge-M1 .
 
 act:merge-M1  a                  prov:Activity ;
@@ -411,7 +438,10 @@ Connection rules of the generated DAG:
 - the merges are **evenly interleaved** among those transitions; each merge combines the heads of
   2 — or sometimes 3, when at least 3 branches exist (**octopus**) — randomly chosen distinct
   branches, and becomes the new head of the first of them; the other merged branches keep their
-  heads and stay active, as in git;
+  heads and stay active, as in git. Head combinations whose merge would leave the DAG without a
+  legal PROV-O generation-time assignment (§5.8 — e.g. merging a head with one of its own
+  children) are skipped: the first schedulable combination in the shuffled order is used, and
+  when none exists the merge slot falls back to a transition and the merge is retried later;
 - every transition applies the evolution differential to its parent's dataset: it **deletes
   `evolutionQuads / 2` random quads** (capped by the dataset size) and **adds the remaining
   `evolutionQuads - evolutionQuads / 2` fresh quads**. Fresh quads are BSBM-flavored (products,

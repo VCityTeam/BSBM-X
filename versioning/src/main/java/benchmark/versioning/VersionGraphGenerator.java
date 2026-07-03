@@ -1,5 +1,8 @@
 package benchmark.versioning;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -28,7 +31,12 @@ import org.apache.jena.sparql.core.Quad;
  *       merge combines the heads of 2 — or sometimes 3, when at least 3
  *       branches exist (octopus) — randomly chosen distinct branches, and
  *       becomes the new head of the first of them; the other merged
- *       branches keep their heads and stay active, as in git;</li>
+ *       branches keep their heads and stay active, as in git. Head
+ *       combinations whose merge would leave the DAG without a legal
+ *       PROV-O generation-time assignment (see {@link VersionTimestamps})
+ *       are skipped — the first schedulable combination in the shuffled
+ *       order is used, and if none exists the merge slot falls back to a
+ *       transition and the merge is retried later;</li>
  *   <li>every transition deletes {@code evolutionQuads / 2} random quads
  *       from its parent's dataset (capped by the dataset size) and adds
  *       {@code evolutionQuads - evolutionQuads / 2} fresh quads.</li>
@@ -37,12 +45,21 @@ import org.apache.jena.sparql.core.Quad;
  * creation order. Fresh quads are BSBM-flavored Apache Jena {@link Quad}s
  * (see {@link Vocabulary}) rotating over the three named graphs.
  * <p>
- * The generation is deterministic for a given seed, and the DAG structure
+ * Once the DAG is built, every version receives its PROV-O
+ * {@code prov:generatedAtTime} and {@code prov:invalidatedAtTime}
+ * ({@link VersionTimestamps}): the instants are anchored at the wall-clock
+ * instant the generation ran and advance by one second per generation level,
+ * so that every version is generated strictly after its parents, all
+ * versions following a fork are generated at the same instant (which is the
+ * fork's invalidation instant) and the final versions stay valid.
+ * <p>
+ * The generation is deterministic for a given seed (only the wall-clock
+ * anchor of the timestamps changes between runs), and the DAG structure
  * does not depend on the merge policy: two independent random streams are
  * used, one for the structure (fork/branch/merge choices) and one for the
- * data (deletion picks). The same parameters replayed under different
- * policies therefore produce the same DAG — only the datasets downstream of
- * the merges differ.
+ * data (deletion picks), and the schedulability check is purely structural.
+ * The same parameters replayed under different policies therefore produce
+ * the same DAG — only the datasets downstream of the merges differ.
  */
 public final class VersionGraphGenerator {
 
@@ -114,6 +131,11 @@ public final class VersionGraphGenerator {
     }
 
     private VersionGraph build() {
+        // Rule 1: the timestamps are anchored at the wall-clock instant the
+        // graph was programmatically generated (whole seconds, so the
+        // xsd:dateTime literals round-trip losslessly).
+        Instant generatedAt = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+
         Set<Quad> initialData = new HashSet<>();
         for (int i = 0; i < params.initialQuads(); i++) {
             initialData.add(freshQuad());
@@ -121,7 +143,9 @@ public final class VersionGraphGenerator {
         heads.add(graph.createRoot("V0", initialData));
 
         // Open the additional branches first, then interleave the merges
-        // evenly among the remaining transitions.
+        // evenly among the remaining transitions. A merge slot whose head
+        // combinations are all unschedulable falls back to a transition and
+        // the merge is retried on the next slot.
         int forks = params.branches() - 1;
         for (int i = 0; i < forks; i++) {
             fork();
@@ -129,13 +153,19 @@ public final class VersionGraphGenerator {
         int remaining = params.versions() - 1 - forks;
         int mergesDone = 0;
         for (int i = 1; i <= remaining; i++) {
-            if ((long) i * params.merges() / remaining > mergesDone) {
-                merge();
+            if ((long) i * params.merges() / remaining > mergesDone && tryMerge()) {
                 mergesDone++;
             } else {
                 advance();
             }
         }
+        if (mergesDone < params.merges()) {
+            throw new IllegalStateException("Only " + mergesDone + " of " + params.merges()
+                    + " merges admit a PROV-O generation-time assignment with these parameters;"
+                    + " try another seed or a larger version budget");
+        }
+
+        VersionTimestamps.assign(graph.getVersions(), generatedAt, Duration.ofSeconds(1));
         return graph;
     }
 
@@ -173,19 +203,69 @@ public final class VersionGraphGenerator {
     /**
      * Merges the heads of 2 (or 3, octopus) distinct random branches; the
      * merge becomes the new head of the first of them.
+     * <p>
+     * Not every head combination is legal: the merge must keep the DAG
+     * schedulable, i.e. still admit a PROV-O generation-time assignment
+     * where all versions following a fork are generated at the same instant
+     * (e.g. merging a head with one of its own children never is — the
+     * merge would have to be generated both at the same instant as, and
+     * strictly after, that child). The first schedulable combination in the
+     * shuffled order is used, preferring the drawn parent count; when no
+     * combination is schedulable nothing is created and the caller falls
+     * back to a transition.
+     *
+     * @return whether a merge node was created
      */
-    private void merge() {
+    private boolean tryMerge() {
         int parentCount = heads.size() >= 3 && structureRng.nextBoolean() ? 3 : 2;
         List<Integer> branches = new ArrayList<>();
         for (int b = 0; b < heads.size(); b++) {
             branches.add(b);
         }
         Collections.shuffle(branches, structureRng);
-        List<Version> parents = branches.subList(0, parentCount).stream()
-                .map(heads::get)
-                .toList();
-        Version merge = graph.createMerge("M" + nextMergeNo++, parents);
-        heads.set(branches.get(0), merge);
+        List<Integer> sizes = parentCount == 3 ? List.of(3, 2) : List.of(2);
+        for (int size : sizes) {
+            for (int[] combination : combinations(branches.size(), size)) {
+                List<Version> parents = new ArrayList<>();
+                for (int position : combination) {
+                    parents.add(heads.get(branches.get(position)));
+                }
+                if (VersionTimestamps.canAddMerge(graph.getVersions(), parents)) {
+                    Version merge = graph.createMerge("M" + nextMergeNo++, parents);
+                    heads.set(branches.get(combination[0]), merge);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * All the size-{@code k} combinations of {@code 0..n-1}, in
+     * lexicographic order — so the first combinations are the first
+     * positions of the shuffled branch list, matching the plain random
+     * choice when it is schedulable.
+     */
+    private static List<int[]> combinations(int n, int k) {
+        List<int[]> all = new ArrayList<>();
+        int[] combination = new int[k];
+        for (int i = 0; i < k; i++) {
+            combination[i] = i;
+        }
+        while (true) {
+            all.add(combination.clone());
+            int i = k - 1;
+            while (i >= 0 && combination[i] == n - k + i) {
+                i--;
+            }
+            if (i < 0) {
+                return all;
+            }
+            combination[i]++;
+            for (int j = i + 1; j < k; j++) {
+                combination[j] = combination[j - 1] + 1;
+            }
+        }
     }
 
     /**

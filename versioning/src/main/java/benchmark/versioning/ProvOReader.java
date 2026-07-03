@@ -3,6 +3,7 @@ package benchmark.versioning;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.jena.datatypes.xsd.XSDDateTime;
 import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.Property;
 import org.apache.jena.rdf.model.ResIterator;
@@ -38,6 +40,10 @@ import org.apache.jena.vocabulary.RDFS;
  *       {@link ProvOWriter#VERSION_NS} namespace;</li>
  *   <li>the DAG edges pre(v) are the {@code prov:wasDerivedFrom}
  *       statements;</li>
+ *   <li>the lifecycle instants of each version are its
+ *       {@code prov:generatedAtTime} and {@code prov:invalidatedAtTime}
+ *       statements, when present (final versions, still valid, have no
+ *       invalidation instant);</li>
  *   <li>the global merge policy is the {@code prov:SoftwareAgent} in the
  *       {@link ProvOWriter#AGENT_NS} namespace.</li>
  * </ul>
@@ -106,7 +112,9 @@ public final class ProvOReader {
                 }
                 String id = idOf(entity);
                 Set<Quad> data = readDataset(versionFilesDir.resolve(VersionGraphWriter.fileNameOf(id)));
-                Version v = new Version(id, data, parents.stream().map(built::get).toList());
+                Version v = new Version(id, data, parents.stream().map(built::get).toList(),
+                        readInstant(entity, "generatedAtTime", provFile),
+                        readInstant(entity, "invalidatedAtTime", provFile));
                 built.put(entity, v);
                 versions.add(v);
                 progressed = true;
@@ -177,6 +185,30 @@ public final class ProvOReader {
             }
         }
         return parentsOf;
+    }
+
+    /**
+     * The {@code prov:generatedAtTime}/{@code prov:invalidatedAtTime}
+     * instant of a version entity, or {@code null} when absent (final
+     * versions have no invalidation instant, and older provenance files
+     * carry no timestamps at all).
+     */
+    private static Instant readInstant(Resource entity, String provProperty, Path provFile) throws IOException {
+        Statement statement = entity.getProperty(
+                entity.getModel().createProperty(PROV_NS, provProperty));
+        if (statement == null) {
+            return null;
+        }
+        try {
+            Object value = statement.getLiteral().getValue();
+            if (value instanceof XSDDateTime dateTime) {
+                return dateTime.asCalendar().toInstant();
+            }
+            return Instant.parse(statement.getLiteral().getLexicalForm());
+        } catch (RuntimeException e) {
+            throw new IOException("Invalid prov:" + provProperty + " on " + entity.getURI()
+                    + " in " + provFile, e);
+        }
     }
 
     /**

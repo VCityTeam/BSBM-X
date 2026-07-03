@@ -123,8 +123,14 @@ public class Main {
         String parents = v.getParents().isEmpty()
                 ? "none"
                 : v.getParents().stream().map(Version::getId).collect(Collectors.joining(", "));
+        String lifecycle = v.getGeneratedAtTime() == null
+                ? ""
+                : ", generated: " + v.getGeneratedAtTime()
+                        + (v.getInvalidatedAtTime() == null
+                                ? ", still valid"
+                                : ", invalidated: " + v.getInvalidatedAtTime());
         return kindOf(v) + " " + v.getId() + " (parents: " + parents
-                + ", quads: " + v.getData().size() + ")";
+                + ", quads: " + v.getData().size() + lifecycle + ")";
     }
 
     private static String summarize(List<Version> versions) {

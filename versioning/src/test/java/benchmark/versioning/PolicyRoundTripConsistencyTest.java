@@ -47,7 +47,8 @@ class PolicyRoundTripConsistencyTest {
                 "provenance.ttl must declare the policy it was written with");
 
         // 4a. The round-trip must be lossless: every reloaded version must
-        //     carry the same RDF dataset as the generated one.
+        //     carry the same RDF dataset and the same PROV-O lifecycle
+        //     instants as the generated one.
         Map<String, Version> generatedById = new HashMap<>();
         graph.getVersions().forEach(v -> generatedById.put(v.getId(), v));
         assertEquals(generatedById.size(), loaded.versions().size(),
@@ -57,6 +58,12 @@ class PolicyRoundTripConsistencyTest {
             assertNotNull(original, () -> "unknown version reloaded: " + reloaded.getId());
             assertEquals(original.getData(), reloaded.getData(),
                     () -> "dataset of " + reloaded.getId() + " changed through the round-trip");
+            assertNotNull(original.getGeneratedAtTime(),
+                    () -> "generated version " + reloaded.getId() + " must carry a prov:generatedAtTime");
+            assertEquals(original.getGeneratedAtTime(), reloaded.getGeneratedAtTime(),
+                    () -> "prov:generatedAtTime of " + reloaded.getId() + " changed through the round-trip");
+            assertEquals(original.getInvalidatedAtTime(), reloaded.getInvalidatedAtTime(),
+                    () -> "prov:invalidatedAtTime of " + reloaded.getId() + " changed through the round-trip");
         }
 
         // 4b. Consistency verification of the reloaded graph.

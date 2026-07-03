@@ -1,29 +1,48 @@
 package benchmark.versioning;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
-import org.apache.jena.graph.Node;
 import org.apache.jena.sparql.core.Quad;
 
 /**
  * A node {@code v ∈ V} of the version DAG: an id, an immutable RDF dataset
  * {@code S(v)} (a set of Apache Jena {@link Quad}s) and the list of its
  * parents {@code pre(v)}.
+ * <p>
+ * A version also carries its PROV-O lifecycle instants:
+ * <ul>
+ *   <li>{@code prov:generatedAtTime} — when the version was generated;</li>
+ *   <li>{@code prov:invalidatedAtTime} — when its following versions were
+ *       generated, superseding it. Final versions (no followers) are still
+ *       valid and keep {@code null} here.</li>
+ * </ul>
+ * The instants are assigned after the DAG is built (see
+ * {@link VersionTimestamps}), because the invalidation of a version and the
+ * generation-time alignment of the versions following a fork depend on
+ * children that do not exist yet when the version is created.
  */
 public class Version {
     private final String id;
     private final Set<Quad> data;
     private final List<Version> parents;
+    private Instant generatedAtTime;
+    private Instant invalidatedAtTime;
 
     public Version(String id, Set<Quad> data, List<Version> parents) {
+        this(id, data, parents, null, null);
+    }
+
+    public Version(String id, Set<Quad> data, List<Version> parents,
+                   Instant generatedAtTime, Instant invalidatedAtTime) {
         this.id = id;
         this.data = Collections.unmodifiableSet(new HashSet<>(data));
         this.parents = Collections.unmodifiableList(parents);
+        this.generatedAtTime = generatedAtTime;
+        this.invalidatedAtTime = invalidatedAtTime;
     }
 
     public String getId() {
@@ -38,16 +57,33 @@ public class Version {
         return data;
     }
 
-    /**
-     * The RDF dataset of this version, grouped by named graph node.
-     * Graph names are independent of version identifiers.
-     */
-    public Map<Node, Set<Quad>> getNamedGraphs() {
-        return data.stream().collect(Collectors.groupingBy(Quad::getGraph, Collectors.toSet()));
-    }
-
     public List<Version> getParents() {
         return parents;
+    }
+
+    /**
+     * The {@code prov:generatedAtTime} of this version: when it was
+     * generated. {@code null} until assigned by {@link VersionTimestamps}.
+     */
+    public Instant getGeneratedAtTime() {
+        return generatedAtTime;
+    }
+
+    /**
+     * The {@code prov:invalidatedAtTime} of this version: the instant its
+     * following versions were generated. {@code null} for final versions,
+     * which are still valid.
+     */
+    public Instant getInvalidatedAtTime() {
+        return invalidatedAtTime;
+    }
+
+    void setGeneratedAtTime(Instant generatedAtTime) {
+        this.generatedAtTime = generatedAtTime;
+    }
+
+    void setInvalidatedAtTime(Instant invalidatedAtTime) {
+        this.invalidatedAtTime = invalidatedAtTime;
     }
 
     @Override
