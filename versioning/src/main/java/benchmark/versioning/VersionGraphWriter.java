@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -30,16 +29,6 @@ import org.apache.jena.sparql.core.Quad;
  * ({@code <subject> <predicate> <object> <graphName> .} with full IRIs),
  * so the per-version files can be parsed back with Jena
  * (see {@link ProvOReader}).
- * <p>
- * Two layouts are supported:
- * <ul>
- *   <li>{@link #writeEachVersionToDirectory} writes <b>one N-Quads file per
- *       version</b> ({@code <versionId>.nq}); this is the layout reloaded by
- *       {@link ProvOReader};</li>
- *   <li>{@link #writeToFile} / {@link #serialize} write a single
- *       human-readable report of <b>all versions</b>, each section carrying
- *       its kind, parents and dataset.</li>
- * </ul>
  * Versions are written in topological order (parents before children) and
  * the N-Quads lines are sorted, so the export is deterministic and
  * diff-friendly. A short {@code #} comment header (skipped by the Jena
@@ -49,37 +38,6 @@ public final class VersionGraphWriter {
 
     private VersionGraphWriter() {
         // utility class
-    }
-
-    /**
-     * Writes all the versions of the graph into the given file,
-     * overwriting it if it already exists.
-     */
-    public static void writeToFile(VersionGraph graph, Path file) throws IOException {
-        writeToFile(graph.getVersions(), graph.getGlobalPolicy(), file);
-    }
-
-    /**
-     * Writes all the given versions into the given file,
-     * overwriting it if it already exists.
-     */
-    public static void writeToFile(Collection<Version> versions, MergePolicy policy, Path file) throws IOException {
-        write(serialize(versions, policy), file, false);
-    }
-
-    /**
-     * Appends all the versions of the graph to the given file
-     * (useful to export several graphs into the same file).
-     */
-    public static void appendToFile(VersionGraph graph, Path file) throws IOException {
-        appendToFile(graph.getVersions(), graph.getGlobalPolicy(), file);
-    }
-
-    /**
-     * Appends all the given versions to the given file.
-     */
-    public static void appendToFile(Collection<Version> versions, MergePolicy policy, Path file) throws IOException {
-        write(serialize(versions, policy), file, true);
     }
 
     /**
@@ -145,44 +103,22 @@ public final class VersionGraphWriter {
      * File name of the dedicated file of the version with the given id.
      */
     public static String fileNameOf(String versionId) {
-        return versionId.replaceAll("[^A-Za-z0-9._-]", "_") + ".nq";
+        return sanitize(versionId) + ".nq";
     }
 
     /**
-     * Serializes all the versions of the graph to the human-readable report.
+     * A version id sanitized to be a safe file name component (shared by all
+     * the files derived from a version, e.g. the inferred-knowledge files of
+     * {@link InferenceValidator#writeInferredFiles}).
      */
-    public static String serialize(VersionGraph graph) {
-        return serialize(graph.getVersions(), graph.getGlobalPolicy());
-    }
-
-    /**
-     * Serializes all the given versions to the human-readable report. Each
-     * section lists a version's kind, parents and its RDF dataset as sorted
-     * N-Quads lines (serialized by Apache Jena).
-     */
-    public static String serialize(Collection<Version> versions, MergePolicy policy) {
-        List<Version> ordered = topologicalOrder(versions);
-        StringBuilder sb = new StringBuilder();
-        sb.append("# ===== RDF version graph export =====\n");
-        sb.append("# Global merge policy: ").append(policy).append('\n');
-        sb.append("# Number of versions: ").append(ordered.size()).append('\n');
-        for (Version v : ordered) {
-            sb.append('\n');
-            sb.append("=== Version ").append(v.getId()).append(" ===\n");
-            sb.append("kind: ").append(kindOf(v)).append('\n');
-            sb.append("parents: ").append(parentsOf(v)).append('\n');
-            sb.append("quads: ").append(v.getData().size()).append('\n');
-            for (String line : nquadLines(v.getData())) {
-                sb.append(line).append('\n');
-            }
-        }
-        return sb.toString();
+    static String sanitize(String versionId) {
+        return versionId.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     /**
      * Serializes a set of quads to sorted N-Quads lines using Apache Jena.
      */
-    private static List<String> nquadLines(Set<Quad> quads) {
+    static List<String> nquadLines(Set<Quad> quads) {
         DatasetGraph dsg = DatasetGraphFactory.createGeneral();
         for (Quad q : quads) {
             dsg.add(q);
@@ -194,18 +130,6 @@ public final class VersionGraphWriter {
                 .filter(line -> !line.isEmpty())
                 .sorted()
                 .collect(Collectors.toList());
-    }
-
-    private static void write(String content, Path file, boolean append) throws IOException {
-        if (file.getParent() != null) {
-            Files.createDirectories(file.getParent());
-        }
-        if (append) {
-            Files.writeString(file, content, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } else {
-            Files.writeString(file, content, StandardCharsets.UTF_8);
-        }
     }
 
     private static String kindOf(Version v) {

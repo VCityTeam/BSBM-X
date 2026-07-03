@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 /**
@@ -25,6 +26,13 @@ import java.util.stream.Stream;
  * SHACL shapes are validated closed-world, RDFS/OWL ontologies are checked
  * for open-world logical consistency. Example rule files live in
  * {@code src/main/resources/rules/}.
+ * <p>
+ * Under the RDFS/OWL entailment regimes the program also materializes, next
+ * to each version file {@code <id>.nq}, the <b>inferred knowledge</b> of the
+ * version as {@code <id>-<rdfs|owl>-infered.nq}
+ * (see {@link InferenceValidator#writeInferredFiles}). The optional
+ * {@code --policy} parameter restricts the run to the histories whose global
+ * merge policy — read from {@code provenance.ttl} — is the given one.
  */
 public class InferenceValidationMain {
 
@@ -35,12 +43,28 @@ public class InferenceValidationMain {
               --dir <dir>        directory to validate (default versions-export): either it contains
                                  provenance.ttl + <id>.nq files, or each of its sub-directories does
                                  (the per-policy layout written by benchmark.versioning.Main)
+              --policy <p>       union | intersection | symmetric-difference: only validate the
+                                 histories whose global merge policy (read from provenance.ttl)
+                                 is <p> (default: validate every history found)
+            For an RDFS/OWL rule set, the inferred knowledge of every version <id>.nq is also
+            materialized next to it as <id>-<rdfs|owl>-infered.nq.
             Exit code: 0 = every version valid, 1 = at least one violation, 2 = usage error.""";
 
     public static void main(String[] args) throws IOException {
+        System.exit(run(args));
+    }
+
+    /**
+     * The whole program as a testable method.
+     *
+     * @return the exit code: 0 if every validated version is valid, 1 if at
+     *         least one is invalid, 2 on a usage error
+     */
+    static int run(String[] args) throws IOException {
         Path rulesFile = null;
         RuleLanguage language = null;
         Path dir = Path.of(Main.DEFAULT_EXPORT_DIR);
+        MergePolicy policy = null;
         try {
             for (int i = 0; i < args.length; i += 2) {
                 String option = args[i];
@@ -52,6 +76,7 @@ public class InferenceValidationMain {
                     case "--rules" -> rulesFile = Path.of(value);
                     case "--language" -> language = parseLanguage(value);
                     case "--dir" -> dir = Path.of(value);
+                    case "--policy" -> policy = parsePolicy(value);
                     default -> throw new IllegalArgumentException("unknown option " + option);
                 }
             }
@@ -61,8 +86,7 @@ public class InferenceValidationMain {
         } catch (IllegalArgumentException e) {
             System.err.println("Error: " + e.getMessage());
             System.err.println(USAGE);
-            System.exit(2);
-            return;
+            return 2;
         }
 
         InferenceValidator validator = language == null
@@ -71,13 +95,26 @@ public class InferenceValidationMain {
         System.out.println("Rule set: " + rulesFile);
         System.out.println("Language: " + validator.getLanguage()
                 + " (" + validator.getLanguage().getAssumption() + " regime)");
-
-        List<Path> targets = exportDirectories(dir);
-        boolean allValid = true;
-        for (Path target : targets) {
-            allValid &= validateDirectory(validator, target);
+        if (policy != null) {
+            System.out.println("Policy filter: " + policy);
         }
-        System.exit(allValid ? 0 : 1);
+
+        boolean allValid = true;
+        int validated = 0;
+        for (Path target : exportDirectories(dir)) {
+            ProvOReader.ProvenanceGraph loaded = ProvOReader.read(target);
+            if (policy != null && loaded.policy() != policy) {
+                continue;
+            }
+            validated++;
+            allValid &= validateDirectory(validator, target, loaded);
+        }
+        if (validated == 0) {
+            System.err.println("Error: no history with merge policy " + policy
+                    + " found under " + dir);
+            return 2;
+        }
+        return allValid ? 0 : 1;
     }
 
     /**
@@ -93,6 +130,20 @@ public class InferenceValidationMain {
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("invalid rule language '" + value
                     + "' (expected shacl, rdfs, owl or auto)");
+        }
+    }
+
+    /**
+     * Parses a {@code --policy} value: the {@link MergePolicy} name,
+     * case-insensitive, with {@code -} or {@code _} as the separator
+     * (e.g. {@code union}, {@code symmetric-difference}).
+     */
+    static MergePolicy parsePolicy(String value) {
+        try {
+            return MergePolicy.valueOf(value.toUpperCase(Locale.ROOT).replace('-', '_'));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("invalid merge policy '" + value
+                    + "' (expected union, intersection or symmetric-difference)");
         }
     }
 
@@ -121,13 +172,16 @@ public class InferenceValidationMain {
     }
 
     /**
-     * Reloads and validates one export directory; prints the per-version
-     * verdicts, the merge classification and the summary.
+     * Validates one reloaded export directory; prints the per-version
+     * verdicts, the merge classification and the summary. Under the RDFS/OWL
+     * entailment regimes, also materializes the inferred knowledge of every
+     * version as {@code <id>-<rdfs|owl>-infered.nq} next to its
+     * {@code <id>.nq} file.
      *
      * @return {@code true} if every version of the directory is valid.
      */
-    private static boolean validateDirectory(InferenceValidator validator, Path directory) throws IOException {
-        ProvOReader.ProvenanceGraph loaded = ProvOReader.read(directory);
+    private static boolean validateDirectory(InferenceValidator validator, Path directory,
+                                             ProvOReader.ProvenanceGraph loaded) throws IOException {
         InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
 
         System.out.println("\n=== " + directory + " (policy " + loaded.policy() + ") ===");
@@ -155,6 +209,15 @@ public class InferenceValidationMain {
                         + ", merge " + (m.mergeValid() ? "valid" : "invalid")
                         + " -> " + m.outcome());
             }
+        }
+        if (validator.supportsInference()) {
+            List<Path> inferredFiles = validator.writeInferredFiles(loaded.versions(), directory);
+            System.out.println("  Wrote " + inferredFiles.size() + " inferred-knowledge files (*-"
+                    + validator.getLanguage().name().toLowerCase(Locale.ROOT)
+                    + "-infered.nq) to " + directory);
+        } else {
+            System.out.println("  (SHACL constraint regime: nothing is entailed,"
+                    + " no inferred-knowledge files written)");
         }
         System.out.println("  Summary: " + report.summary());
         return report.allValid();

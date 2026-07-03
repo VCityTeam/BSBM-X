@@ -42,25 +42,90 @@ this module is independent of them.
 
 ## 2. Building and running
 
-The module is built with **Maven** (JDK 17+ required) and depends on **Apache Jena** (`jena-arq`),
-used for all RDF parsing/serialization. Run every command from the `versioning/` directory:
+Prerequisites: **JDK 17+** and **Maven**. The only dependencies (**Apache Jena** for all RDF
+parsing/serialization, JUnit 5 for the tests) are fetched by Maven. Every command below runs
+from this directory:
 
 ```bash
-# Compile
-mvn compile
-
-# Run the tests (JUnit 5)
-mvn test
-
-# Run the demonstration program (default parameters)
-mvn compile exec:java
-
-# Generate a custom graph
-mvn compile exec:java -Dexec.args="--versions 40 --branches 5 --merges 6 --initial-quads 100 --evolution 12 --seed 7"
+cd versioning     # if you are at the repository root
+mvn compile       # build the module
+mvn test          # run the JUnit 5 tests
 ```
 
+### 2.1 Quick start: generate the versions, then create the inferred versions
+
+**Step 1 — Generate and export the version histories.** Run the demo program
+(`benchmark.versioning.Main`, the default main class of `exec:java`):
+
+```bash
+mvn compile exec:java
+```
+
+This generates the version graph from the default parameters (§2.2) and exports it once per
+merge policy: `versions-export/union/`, `versions-export/intersection/` and
+`versions-export/symmetric-difference/`, each containing **one N-Quads file per version**
+(`V0.nq` … `V9.nq`, `M1.nq`, `M2.nq`) plus the **PROV-O description** of the version graph
+(`provenance.ttl`). Every policy section of the output ends with:
+
+```
+Reloaded from provenance.ttl: 12 versions (1 root, 9 transitions, 2 merges)
+Reloaded graph is consistent: true
+```
+
+**Step 2 — Create the inferred versions.** Run the **Inference validation** program
+(`benchmark.versioning.InferenceValidationMain`) with an **RDFS or OWL** rule set (the *rule
+type*). For every version file `<id>.nq` of each validated history, it materializes the
+knowledge entailed by that version into a new file `<id>-<ruletype>-infered.nq` next to it:
+
+```bash
+# RDFS rule type -> creates <id>-rdfs-infered.nq next to every <id>.nq
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain \
+    -Dexec.args="--rules src/main/resources/rules/rdfs-ontology.ttl --dir versions-export"
+
+# OWL rule type -> creates <id>-owl-infered.nq
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain \
+    -Dexec.args="--rules src/main/resources/rules/owl-ontology.ttl --dir versions-export"
+
+# Only test one merge policy: --policy restricts the run to the history whose
+# provenance.ttl declares that policy (union | intersection | symmetric-difference)
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain \
+    -Dexec.args="--rules src/main/resources/rules/rdfs-ontology.ttl --dir versions-export --policy union"
+```
+
+Besides the per-version verdicts and the merge classification (§7), each validated directory
+reports the created files:
+
+```
+=== versions-export/union (policy UNION) ===
+  ...
+  Wrote 12 inferred-knowledge files (*-rdfs-infered.nq) to versions-export/union
+  Summary: 12/12 versions valid; merges: 2 preserved, 0 emergent-violation, 0 repaired, 0 inherited-violation
+```
+
+**Step 3 — Inspect an inferred version.** Each file is valid N-Quads: a `#` comment header,
+then one line per inferred statement, all placed in the dedicated named graph
+`http://example.org/graph/inferred`. `versions-export/union/V0-rdfs-infered.nq` (excerpt):
+
+```
+# ===== Inferred knowledge export (N-Quads) =====
+# version: V0
+# rule language: RDFS (open-world regime)
+# asserted quads: 20
+# inferred statements: 33 (named graph http://example.org/graph/inferred)
+<http://example.org/offer1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Offer> <http://example.org/graph/inferred> .
+<http://example.org/review2> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Review> <http://example.org/graph/inferred> .
+...
+```
+
+No version ever *asserts* `ex:offer1 rdf:type bsbm:Offer`: this statement is **entailed** by the
+`rdfs:domain` of `bsbm:price` declared in the ontology. What exactly goes into these files — and
+why a SHACL rule set produces none (it validates but entails nothing) — is specified in §7,
+“Inferred-knowledge files”. Re-running the program simply overwrites them.
+
+### 2.2 Generation parameters
+
 The graph is **not hard-coded and not read from a file**: it is generated from the
-program parameters (see §4.10):
+program parameters (see §5.9):
 
 | Option | Meaning | Default |
 |---|---|---|
@@ -76,6 +141,11 @@ program parameters (see §4.10):
 
 Constraints: `versions >= branches + merges`, and `branches >= 2` when `merges > 0`.
 
+```bash
+# Example: generate a larger custom graph (then create its inferred versions as in §2.1, step 2)
+mvn compile exec:java -Dexec.args="--versions 40 --branches 5 --merges 6 --initial-quads 100 --evolution 12 --seed 7"
+```
+
 For each policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) the demo:
 
 1. generates the graph from the parameters (the same seed produces the same DAG for
@@ -83,7 +153,7 @@ For each policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) the demo:
 2. **exports each version in a different N-Quads file** and generates the **PROV-O graph
    describing the version graph** (`provenance.ttl`),
 3. **reloads the whole version graph from the generated `provenance.ttl`** (parsed with
-   Apache Jena — see §4.11): the DAG structure and the policy come from the PROV-O
+   Apache Jena — see §5.10): the DAG structure and the policy come from the PROV-O
    description, the dataset S(v) of each version from its exported N-Quads file,
 4. prints a summary and `Reloaded graph is consistent: true`.
 
@@ -97,6 +167,8 @@ sub-directory per demo policy (file names shown for the default parameters):
 versions-export/
 ├── union/
 │   ├── V0.nq  V1.nq  ...  V9.nq  M1.nq  M2.nq   # one N-Quads file per version
+│   ├── V0-rdfs-infered.nq  V0-owl-infered.nq ... # inferred knowledge per version (written by
+│   │                                             # the Inference validation program, §7)
 │   └── provenance.ttl                            # PROV-O description of the DAG (Turtle)
 ├── intersection/            (same layout)
 └── symmetric-difference/    (same layout)
@@ -113,6 +185,8 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless and the reloaded graph is consistent under the declared policy. (Formerly `Main.testPolicy`.) |
 | `InconsistencyDetectionTest` | Builds a merge tampered with a parasitic quad (violating the global UNION policy), exports it, reloads it and asserts it is detected as inconsistent through the PROV-O round-trip. (Formerly `Main.testInconsistencyDetection`.) |
 | `InferenceValidationTest` | Executable version of the worked micro-examples of [Version-history-inference-validation.md](Version-history-inference-validation.md) §12: each merge policy creating (`EMERGENT_VIOLATION`), propagating (`INHERITED_VIOLATION`) or repairing (`REPAIRED`) invalidity under SHACL (closed world) and RDFS/OWL (open world) rules, plus rule-language detection and the example rule files run against generated histories. |
+| `InferredKnowledgeTest` | The **inferred knowledge** of a version and its `<id>-<rdfs\|owl>-infered.nq` export files (§7): RDFS domain/range typing, OWL `owl:sameAs` from a functional property, how `∪` accumulates and `∩` loses the branches' inferences, that SHACL entails nothing, and that the inferred files parse as N-Quads without disturbing the PROV-O round-trip. |
+| `InferenceValidationMainTest` | The Inference validation **program**: the `--policy` parameter (selects the history by the merge policy read from `provenance.ttl`), the inferred-knowledge files it materializes (RDFS/OWL yes, SHACL no), and the exit codes (including `2` on usage errors and unmatched policies). |
 
 ---
 
@@ -131,8 +205,8 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | `ProvOReader` | **Reads a version graph back from its PROV-O description** (`provenance.ttl`, parsed with Apache Jena) and the per-version N-Quads files. |
 | `Main` | Runnable demonstration program (generate → export → reload → summarize, optionally validate with `--rules`). |
 | `RuleLanguage` | The rule languages of the Inference validation (`SHACL`, `RDFS`, `OWL`), each tied to its world assumption (closed/open), with namespace-based auto-detection. |
-| `InferenceValidator` | The **Inference validation engine**: validates every version against a rule set and classifies every merge by the outcome taxonomy (`PRESERVED`, `EMERGENT_VIOLATION`, `REPAIRED`, `INHERITED_VIOLATION`). |
-| `InferenceValidationMain` | Runnable **Inference validation** program: reloads exported histories and prints the per-version verdicts, the merge classification and the summary (§7). |
+| `InferenceValidator` | The **Inference validation engine**: validates every version against a rule set, classifies every merge by the outcome taxonomy (`PRESERVED`, `EMERGENT_VIOLATION`, `REPAIRED`, `INHERITED_VIOLATION`) and, under RDFS/OWL, materializes the **inferred knowledge** of each version (`inferredKnowledge`, `writeInferredFiles`). |
+| `InferenceValidationMain` | Runnable **Inference validation** program: reloads exported histories (optionally selected with `--policy`), prints the per-version verdicts, the merge classification and the summary, and writes the `<id>-<rdfs\|owl>-infered.nq` files (§7). |
 
 ### About quads and named graphs
 
@@ -396,9 +470,10 @@ significant for `SYMMETRIC_DIFFERENCE`.
 ## 7. Inference validation (rules, world assumptions, merge validity)
 
 The **Inference validation** program checks the validity of **all versions** of an exported
-history against a rule set, and classifies every **merge**. Its formal foundations — what
-"valid" means per rule language and world assumption, and which merge policy endangers which
-constraint family — are developed in
+history against a rule set, classifies every **merge**, and (under RDFS/OWL) creates the
+per-version **inferred-knowledge files** — a step-by-step walkthrough from a fresh checkout is
+in §2.1. Its formal foundations — what "valid" means per rule language and world assumption,
+and which merge policy endangers which constraint family — are developed in
 [Version-history-inference-validation.md](Version-history-inference-validation.md), which extends
 the formalization of [Generation-formalisation.md](Generation-formalisation.md).
 
@@ -411,6 +486,10 @@ mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationM
 
 # Or check open-world consistency of one directory against the OWL ontology
 mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -Dexec.args="--rules src/main/resources/rules/owl-ontology.ttl --language owl --dir versions-export/union"
+
+# Or test a single merge policy: only the history whose provenance.ttl declares
+# the UNION policy agent is validated (and gets its *-rdfs-infered.nq files)
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -Dexec.args="--rules src/main/resources/rules/rdfs-ontology.ttl --dir versions-export --policy union"
 ```
 
 | Option | Meaning | Default |
@@ -418,9 +497,29 @@ mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationM
 | `--rules <file>` | The rule set: SHACL shapes or an RDFS/OWL ontology (Turtle/RDF). **Required.** | — |
 | `--language <l>` | `shacl` \| `rdfs` \| `owl` \| `auto`. | `auto` (detected from the namespaces) |
 | `--dir <dir>` | Directory to validate: either it contains `provenance.ttl` + `<id>.nq` files, or each of its sub-directories does (the per-policy layout written by `Main`). | `versions-export` |
+| `--policy <p>` | The **merge policy to test**: `union` \| `intersection` \| `symmetric-difference` (case-insensitive, `-` or `_`). Only the histories whose global merge policy — read from `provenance.ttl`, the authoritative description — is `<p>` are validated; matching none is a usage error. | validate every history found |
 
 Exit code: `0` — every version valid, `1` — at least one violation (CI-friendly), `2` — usage
 error.
+
+### Inferred-knowledge files (`<id>-<rdfs|owl>-infered.nq`)
+
+Under the RDFS/OWL **entailment regimes**, the program also materializes the **inferred
+knowledge** of every version: next to each version file `<id>.nq` it writes
+`<id>-rdfs-infered.nq` (resp. `<id>-owl-infered.nq`) containing every statement entailed by the
+version's triple projection together with the ontology — the deductive closure of the
+schema-bound Jena reasoner — that is **neither asserted in the version nor already entailed by
+the ontology alone**. Under RDFS this is what domains, ranges and class hierarchies add (e.g.
+`ex:review2 rdf:type bsbm:Review` from the domain of `bsbm:reviewFor`); under OWL also what the
+negative and equality axioms add (`owl:differentFrom` pairs from the disjointness axioms,
+`owl:sameAs` from a functional property, `owl:Thing` memberships, …).
+
+The files are valid N-Quads (a `#` comment header, then sorted lines, parsable with Jena); the
+inferred statements are placed in the dedicated named graph
+`http://example.org/graph/inferred` (`Vocabulary.GRAPH_INFERRED`), so they can never be confused
+with asserted quads, and their presence does not disturb the PROV-O reload (`ProvOReader` only
+resolves `<id>.nq` files). Under SHACL nothing is written: the constraint regime **validates but
+entails nothing** (`InferenceValidator.supportsInference()` is `false`).
 
 The rule language decides the **regime and world assumption**:
 
@@ -454,6 +553,12 @@ InferenceValidator.VersionValidity verdict = validator.validate(version);
 InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
 report.merges().forEach(m -> System.out.println(m.mergeId() + " -> " + m.outcome()));
 System.out.println(report.summary());
+
+// RDFS/OWL only: materialize the inferred knowledge of every version
+if (validator.supportsInference()) {
+    Set<Quad> inferred = validator.inferredKnowledge(version);          // in Vocabulary.GRAPH_INFERRED
+    validator.writeInferredFiles(loaded.versions(), exportDirectory);   // <id>-<rdfs|owl>-infered.nq
+}
 ```
 
 ---

@@ -18,8 +18,6 @@ import org.apache.jena.vocabulary.RDF;
  */
 public final class Vocabulary {
 
-    /** Namespace of the {@code rdf:} prefix. */
-    public static final String RDF_NS = RDF.getURI();
     /** Namespace of the {@code ex:} prefix (example instances). */
     public static final String EX_NS = "http://example.org/";
     /** Namespace of the {@code bsbm:} prefix (BSBM vocabulary). */
@@ -31,6 +29,12 @@ public final class Vocabulary {
     public static final String GRAPH_OFFERS = "http://example.org/graph/offers";
     /** Named graph holding the review triples. */
     public static final String GRAPH_REVIEWS = "http://example.org/graph/reviews";
+    /**
+     * Named graph holding <b>inferred</b> statements: knowledge entailed by a
+     * version's data under an RDFS/OWL rule set but not asserted in the
+     * version itself (see {@code InferenceValidator#inferredKnowledge}).
+     */
+    public static final String GRAPH_INFERRED = "http://example.org/graph/inferred";
 
     private Vocabulary() {
         // utility class

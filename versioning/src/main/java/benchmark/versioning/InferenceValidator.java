@@ -1,15 +1,20 @@
 package benchmark.versioning;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 
+import org.apache.jena.graph.Node;
 import org.apache.jena.rdf.model.InfModel;
 import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.ModelFactory;
@@ -42,7 +47,13 @@ import org.apache.jena.sparql.core.Quad;
  *       {@link MergeOutcome#PRESERVED}, {@link MergeOutcome#EMERGENT_VIOLATION}
  *       (manufactured by the merge policy itself),
  *       {@link MergeOutcome#REPAIRED} and
- *       {@link MergeOutcome#INHERITED_VIOLATION}.</li>
+ *       {@link MergeOutcome#INHERITED_VIOLATION};</li>
+ *   <li>under the RDFS/OWL entailment regimes, the <b>inferred knowledge</b>
+ *       of each version — what the reasoner entails from the version's data
+ *       and the ontology beyond what is asserted — can be materialized
+ *       ({@link #inferredKnowledge}) and exported next to the version's
+ *       N-Quads file as {@code <id>-<rdfs|owl>-infered.nq}
+ *       ({@link #writeInferredFiles}).</li>
  * </ul>
  * Instances are immutable and reusable across versions and histories.
  */
@@ -111,6 +122,13 @@ public final class InferenceValidator {
     private final Shapes shapes;
     /** Schema-bound reasoner (RDFS/OWL regimes only). */
     private final Reasoner reasoner;
+    /**
+     * Deductive closure of the <b>empty</b> dataset under the schema-bound
+     * reasoner (RDFS/OWL regimes only): the statements entailed by the
+     * ontology alone, including the axiomatic vocabulary. Subtracting it
+     * from a version's closure leaves the version-specific inferences.
+     */
+    private final Model schemaClosure;
 
     private InferenceValidator(RuleLanguage language, Model rules) {
         this.language = language;
@@ -129,6 +147,14 @@ public final class InferenceValidator {
             }
             default -> throw new IllegalArgumentException("Unsupported rule language: " + language);
         }
+        this.schemaClosure = reasoner == null ? null : materialize(
+                ModelFactory.createInfModel(reasoner, ModelFactory.createDefaultModel()));
+    }
+
+    private static Model materialize(InfModel inference) {
+        Model closure = ModelFactory.createDefaultModel();
+        inference.listStatements().forEachRemaining(closure::add);
+        return closure;
     }
 
     /** Creates a validator for the given rules, detecting their language. */
@@ -172,14 +198,110 @@ public final class InferenceValidator {
      * regime of the rule language.
      */
     public VersionValidity validate(Version version) {
-        Model data = ModelFactory.createDefaultModel();
-        for (Quad quad : version.getData()) {
-            data.getGraph().add(quad.asTriple());
-        }
+        Model data = tripleProjection(version);
         return switch (language) {
             case SHACL -> validateShacl(version.getId(), data);
             case RDFS, OWL -> validateConsistency(version.getId(), data);
         };
+    }
+
+    /** The triple projection π(S(v)) of a version: the union of its named graphs (§5.1). */
+    private static Model tripleProjection(Version version) {
+        Model data = ModelFactory.createDefaultModel();
+        for (Quad quad : version.getData()) {
+            data.getGraph().add(quad.asTriple());
+        }
+        return data;
+    }
+
+    /**
+     * Whether the rule language <b>entails</b> new statements: {@code true}
+     * for the RDFS/OWL entailment regimes, {@code false} for the SHACL
+     * constraint regime (which validates but infers nothing).
+     */
+    public boolean supportsInference() {
+        return language.getAssumption() == RuleLanguage.WorldAssumption.OPEN;
+    }
+
+    /**
+     * Materializes the <b>inferred knowledge</b> of a version: every
+     * statement entailed by the version's triple projection together with
+     * the ontology (the deductive closure of the schema-bound reasoner) that
+     * is neither asserted in the version nor already entailed by the
+     * ontology alone. Under RDFS this is what domains, ranges and class
+     * hierarchies add; under OWL also what the negative and equality axioms
+     * add (e.g. {@code owl:sameAs} from a functional property).
+     *
+     * @return the inferred statements, as quads in the
+     *         {@link Vocabulary#GRAPH_INFERRED} named graph
+     * @throws IllegalStateException under the SHACL constraint regime
+     */
+    public Set<Quad> inferredKnowledge(Version version) {
+        requireEntailmentRegime();
+        Model data = tripleProjection(version);
+        InfModel inference = ModelFactory.createInfModel(reasoner, data);
+        Node graph = Vocabulary.iri(Vocabulary.GRAPH_INFERRED);
+        Set<Quad> inferred = new HashSet<>();
+        inference.listStatements().forEachRemaining(statement -> {
+            if (!data.contains(statement) && !schemaClosure.contains(statement)) {
+                inferred.add(new Quad(graph, statement.asTriple()));
+            }
+        });
+        return inferred;
+    }
+
+    /**
+     * Name of the inferred-knowledge file of the version with the given id:
+     * {@code <sanitized-id>-<rdfs|owl>-infered.nq}, located next to the
+     * version's own {@code <sanitized-id>.nq} file.
+     */
+    public String inferredFileNameOf(String versionId) {
+        return VersionGraphWriter.sanitize(versionId) + "-"
+                + language.name().toLowerCase(Locale.ROOT) + "-infered.nq";
+    }
+
+    /**
+     * Writes the inferred knowledge of <b>each version in a different
+     * file</b> inside the given directory: for every version {@code <id>},
+     * one N-Quads file {@code <id>-<rdfs|owl>-infered.nq} holding all the
+     * statements of {@link #inferredKnowledge} (in the
+     * {@link Vocabulary#GRAPH_INFERRED} named graph), preceded by a
+     * {@code #} comment header. Versions are written in topological order
+     * and the lines are sorted, so the export is deterministic.
+     *
+     * @return the list of files written, in topological order
+     * @throws IllegalStateException under the SHACL constraint regime
+     */
+    public List<Path> writeInferredFiles(Collection<Version> versions, Path directory) throws IOException {
+        requireEntailmentRegime();
+        Files.createDirectories(directory);
+        List<Path> written = new ArrayList<>();
+        for (Version v : VersionGraphWriter.topologicalOrder(versions)) {
+            Set<Quad> inferred = inferredKnowledge(v);
+            StringBuilder sb = new StringBuilder();
+            sb.append("# ===== Inferred knowledge export (N-Quads) =====\n");
+            sb.append("# version: ").append(v.getId()).append('\n');
+            sb.append("# rule language: ").append(language)
+                    .append(" (").append(language.getAssumption()).append(" regime)\n");
+            sb.append("# asserted quads: ").append(v.getData().size()).append('\n');
+            sb.append("# inferred statements: ").append(inferred.size())
+                    .append(" (named graph ").append(Vocabulary.GRAPH_INFERRED).append(")\n");
+            for (String line : VersionGraphWriter.nquadLines(inferred)) {
+                sb.append(line).append('\n');
+            }
+            Path file = directory.resolve(inferredFileNameOf(v.getId()));
+            Files.writeString(file, sb.toString(), StandardCharsets.UTF_8);
+            written.add(file);
+        }
+        return written;
+    }
+
+    private void requireEntailmentRegime() {
+        if (!supportsInference()) {
+            throw new IllegalStateException("The " + language + " constraint regime validates but"
+                    + " entails nothing: inferred knowledge only exists under the RDFS/OWL"
+                    + " entailment regimes");
+        }
     }
 
     /**
