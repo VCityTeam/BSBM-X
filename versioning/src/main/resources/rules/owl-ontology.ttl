@@ -1,29 +1,100 @@
 # OWL ontology for the BSBM-flavored version content — open-world regime.
 # Extends the RDFS vocabulary with negative axioms (pairwise class
-# disjointness, functional price), which is what gives the open-world
-# consistency check something to refute: see
+# disjointness, functional prices/ratings/delivery days), which is what
+# gives the open-world consistency check something to refute: see
 # Version-history-inference-validation.md §6.3 and §10 (a purely positive
 # ontology validates every merge vacuously). Note the non-UNA caveat of
-# §6.3: a functional property with two IRI values infers owl:sameAs instead
-# of an inconsistency; only provably distinct values (e.g. two different
-# literals) produce a detectable clash.
+# §6.3: a functional property with two IRI values (bsbm:product,
+# bsbm:vendor, bsbm:producer below) infers owl:sameAs instead of an
+# inconsistency; only provably distinct values (e.g. two different
+# literals, as for bsbm:price or bsbm:rating1) produce a detectable clash.
+# The generated content never violates any of these axioms by construction
+# (one asserted type per entity pool, one value per functional property),
+# so every subset of it — hence every version of every merge policy —
+# stays consistent.
 @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/> .
 
+# Classes: the main entity kinds are pairwise disjoint; Producer and Vendor
+# are disjoint siblings under a common Organization superclass.
 bsbm:Product a owl:Class ;
-    owl:disjointWith bsbm:Offer, bsbm:Review .
+    owl:disjointWith bsbm:Offer, bsbm:Review, bsbm:Vendor, bsbm:Person .
 bsbm:Offer a owl:Class ;
-    owl:disjointWith bsbm:Review .
-bsbm:Review a owl:Class .
+    owl:disjointWith bsbm:Review, bsbm:Vendor, bsbm:Person .
+bsbm:Review a owl:Class ;
+    owl:disjointWith bsbm:Vendor, bsbm:Person .
+bsbm:Vendor a owl:Class ;
+    rdfs:subClassOf bsbm:Organization ;
+    owl:disjointWith bsbm:Person .
+bsbm:Person         a owl:Class .
+bsbm:ProductFeature a owl:Class .
+bsbm:Organization   a owl:Class .
+bsbm:Producer a owl:Class ;
+    rdfs:subClassOf bsbm:Organization ;
+    owl:disjointWith bsbm:Vendor .
 
-bsbm:reviewFor
+# Product description. producer is functional: one manufacturer per
+# product (IRI-valued — two values identify silently, non-UNA caveat).
+bsbm:productFeature
     a owl:ObjectProperty ;
-    rdfs:domain bsbm:Review ;
-    rdfs:range  bsbm:Product .
+    rdfs:domain bsbm:Product ;
+    rdfs:range  bsbm:ProductFeature .
 
+bsbm:producer
+    a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Product ;
+    rdfs:range  bsbm:Producer .
+
+# Offer description. Two *literal* prices (or delivery days) for one offer
+# are provably distinct, so a UNION merge accumulating them is detectably
+# inconsistent; two product/vendor IRIs merely entail owl:sameAs.
 bsbm:price
     a owl:DatatypeProperty, owl:FunctionalProperty ;
     rdfs:domain bsbm:Offer .
+
+bsbm:product
+    a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  bsbm:Product .
+
+bsbm:vendor
+    a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  bsbm:Vendor .
+
+bsbm:deliveryDays
+    a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  xsd:integer .
+
+# Review description. hasReview is the declared inverse of reviewFor,
+# feeding owl:inverseOf entailments into the inferred-knowledge files.
+bsbm:reviewFor
+    a owl:ObjectProperty ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  bsbm:Product ;
+    owl:inverseOf bsbm:hasReview .
+
+bsbm:hasReview
+    a owl:ObjectProperty ;
+    rdfs:domain bsbm:Product ;
+    rdfs:range  bsbm:Review .
+
+bsbm:rating1
+    a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  xsd:integer .
+
+bsbm:reviewer
+    a owl:ObjectProperty ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  bsbm:Person .
+
+# Vendor description.
+bsbm:country
+    a owl:DatatypeProperty ;
+    rdfs:domain bsbm:Vendor ;
+    rdfs:range  xsd:string .

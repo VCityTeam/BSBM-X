@@ -116,15 +116,17 @@ then one line per inferred statement, all placed in the dedicated named graph
 # version: V0
 # rule language: RDFS (open-world regime)
 # asserted quads: 20
-# inferred statements: 33 (named graph http://example.org/graph/inferred)
-<http://example.org/offer1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Offer> <http://example.org/graph/inferred> .
-<http://example.org/review2> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Review> <http://example.org/graph/inferred> .
+# inferred statements: 22 (named graph http://example.org/graph/inferred)
+<http://example.org/producer0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Organization> <http://example.org/graph/inferred> .
+<http://example.org/review0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/Review> <http://example.org/graph/inferred> .
 ...
 ```
 
-No version ever *asserts* `ex:offer1 rdf:type bsbm:Offer`: this statement is **entailed** by the
-`rdfs:domain` of `bsbm:price` declared in the ontology. What exactly goes into these files — and
-why a SHACL rule set produces none (it validates but entails nothing) — is specified in §7,
+No version ever *asserts* `ex:review0 rdf:type bsbm:Review`: this statement is **entailed** by
+the `rdfs:domain` of `bsbm:reviewFor` declared in the ontology, and `ex:producer0`'s
+`bsbm:Organization` type by the `rdfs:range` of `bsbm:producer` combined with the
+`rdfs:subClassOf` axiom on `bsbm:Producer`. What exactly goes into these files — and why a SHACL
+rule set produces none (it validates but entails nothing) — is specified in §7,
 “Inferred-knowledge files”. Re-running the program simply overwrites them.
 
 ### 2.2 Generation parameters
@@ -205,7 +207,7 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 
 | Class | Role |
 |---|---|
-| `Vocabulary` | Central definition of the RDF vocabulary (the `ex:`, `bsbm:`, `rdf:` namespaces and the three named graphs), and factory helpers building Jena `Node`s and `Quad`s. The single place where domain terms become Jena nodes. |
+| `Vocabulary` | Central definition of the RDF vocabulary (the `ex:`, `bsbm:`, `rdf:`, `rdfs:` namespaces and the four content named graphs — products, offers, reviews, vendors — plus the inferred graph), and factory helpers building Jena `Node`s and `Quad`s (IRIs, plain, language-tagged and `xsd:integer` literals). The single place where domain terms become Jena nodes. |
 | `Version` | A node `v ∈ V` of the DAG: an id, an immutable RDF dataset `S(v)` (a `Set<Quad>` of Jena quads), the list of its parents `pre(v)`, the **merge policy** that produced it (`getMergePolicy()`, merge nodes only), and its PROV-O lifecycle instants (`prov:generatedAtTime`, `prov:invalidatedAtTime`). |
 | `VersionTimestamps` | Assigns the PROV-O lifecycle instants of a DAG (§5.8): every version generated strictly after its parents, all versions following a fork generated at the same instant (= the fork's invalidation instant), final versions still valid; also the schedulability check used by the generator before creating a merge. |
 | `MergePolicy` | The merge operator `⊕`: `UNION`, `INTERSECTION` or `SYMMETRIC_DIFFERENCE`. Commutative and associative, hence n-ary merges are well defined. |
@@ -470,8 +472,15 @@ Connection rules of the generated DAG:
   when none exists the merge slot falls back to a transition and the merge is retried later;
 - every transition applies the evolution differential to its parent's dataset: it **deletes
   `evolutionQuads / 2` random quads** (capped by the dataset size) and **adds the remaining
-  `evolutionQuads - evolutionQuads / 2` fresh quads**. Fresh quads are BSBM-flavored (products,
-  offers, reviews) Jena quads that rotate over the three named graphs.
+  `evolutionQuads - evolutionQuads / 2` fresh quads**. Fresh quads are BSBM-flavored Jena quads
+  following a 14-shape catalog that cycles over the four content named graphs — each block
+  describes a product (language-tagged label, type, feature, producer), a vendor (type, country),
+  an offer on the product (price, product and vendor links, delivery days, type) and a review of
+  it (reference, `xsd:integer` rating, reviewer), with features, producers and reviewers drawn
+  from small shared pools so blocks reference common entities. Within a block, every quad
+  required by a SHACL witness constraint is emitted before the quad that targets it, so a version
+  built of additions alone is closed-world valid at any counter frontier: SHACL violations only
+  appear where a deletion or a merge actually damaged the data.
 
 Transitions are named `V1..Vn` and merges `M1..Mm`, in creation order. **The state of merge nodes
 is never generated**: it is computed by applying the merge's policy — the global one, or its
@@ -601,11 +610,15 @@ Every merge node is classified by crossing the parents' validity with the merge'
 | `INHERITED_VIOLATION` | some invalid | invalid | the violation was propagated from a branch |
 
 Three example rule files over the generator's BSBM-flavored vocabulary live in
-`src/main/resources/rules/`: `shacl-shapes.ttl` (referential integrity of reviews + price upper
-bounds; with the default generation parameters the deleting transitions and the `∩`/`Δ` merges
-produce dangling references that it flags), `rdfs-ontology.ttl` (deliberately all-positive:
-validates everything, exhibiting open-world blindness to loss) and `owl-ontology.ttl` (adds
-disjointness and a functional price, giving the open-world regime something to refute).
+`src/main/resources/rules/`: `shacl-shapes.ttl` (one shape per §7 constraint family: referential
+integrity of reviews and offer links, mandatory labels/prices/product links, price/rating/country
+upper bounds and intrinsic value checks; with the default generation parameters the deleting
+transitions and the `∩`/`Δ` merges produce dangling references and lost witnesses that it flags),
+`rdfs-ontology.ttl` (deliberately all-positive — classes with a small hierarchy, domains, ranges,
+a sub-property: validates everything, exhibiting open-world blindness to loss) and
+`owl-ontology.ttl` (the same vocabulary with negative axioms — pairwise class disjointness,
+functional prices/ratings/delivery days — plus an `owl:inverseOf`, giving the open-world regime
+something to refute and richer entailments to materialize).
 
 A fourth file, `metagraph.rules`, is a rule set in the **native Jena rule syntax** (not RDF) that
 reasons over the PROV-O description of the version graph itself (§8). Pass it with

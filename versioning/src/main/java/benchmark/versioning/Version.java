@@ -48,7 +48,7 @@ public class Version {
     public Version(String id, Set<Quad> data, List<Version> parents, MergePolicy mergePolicy,
                    Instant generatedAtTime, Instant invalidatedAtTime) {
         this.id = id;
-        this.data = Collections.unmodifiableSet(new HashSet<>(data));
+        this.data = Set.copyOf(data);
         this.parents = Collections.unmodifiableList(parents);
         this.mergePolicy = mergePolicy;
         this.generatedAtTime = generatedAtTime;

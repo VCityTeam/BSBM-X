@@ -1,9 +1,11 @@
 package benchmark.versioning;
 
+import org.apache.jena.datatypes.xsd.XSDDatatype;
 import org.apache.jena.graph.Node;
 import org.apache.jena.graph.NodeFactory;
 import org.apache.jena.sparql.core.Quad;
 import org.apache.jena.vocabulary.RDF;
+import org.apache.jena.vocabulary.RDFS;
 
 /**
  * Central definition of the RDF vocabulary used by the generated version
@@ -13,8 +15,9 @@ import org.apache.jena.vocabulary.RDF;
  * Every quad handled by this module is an Apache Jena {@link Quad}
  * ({@code (graph, subject, predicate, object)} of {@link Node}s), and Jena is
  * responsible for all quad/triple parsing and serialization. The
- * {@code ex:}, {@code bsbm:} and {@code rdf:} prefixes used throughout are
- * expanded to full IRIs here, so the prefix-to-IRI mapping is defined once.
+ * {@code ex:}, {@code bsbm:}, {@code rdf:} and {@code rdfs:} prefixes used
+ * throughout are expanded to full IRIs here, so the prefix-to-IRI mapping is
+ * defined once.
  */
 public final class Vocabulary {
 
@@ -29,6 +32,8 @@ public final class Vocabulary {
     public static final String GRAPH_OFFERS = "http://example.org/graph/offers";
     /** Named graph holding the review triples. */
     public static final String GRAPH_REVIEWS = "http://example.org/graph/reviews";
+    /** Named graph holding the vendor triples. */
+    public static final String GRAPH_VENDORS = "http://example.org/graph/vendors";
     /**
      * Named graph holding <b>inferred</b> statements: knowledge entailed by a
      * version's data under an RDFS/OWL rule set but not asserted in the
@@ -60,9 +65,24 @@ public final class Vocabulary {
         return RDF.type.asNode();
     }
 
+    /** The {@code rdfs:label} predicate node. */
+    public static Node label() {
+        return RDFS.label.asNode();
+    }
+
     /** A plain (xsd:string) literal node. */
     public static Node literal(String lexicalForm) {
         return NodeFactory.createLiteralString(lexicalForm);
+    }
+
+    /** A language-tagged ({@code rdf:langString}) literal node. */
+    public static Node langLiteral(String lexicalForm, String languageTag) {
+        return NodeFactory.createLiteralLang(lexicalForm, languageTag);
+    }
+
+    /** A typed {@code xsd:integer} literal node. */
+    public static Node integerLiteral(long value) {
+        return NodeFactory.createLiteralDT(Long.toString(value), XSDDatatype.XSDinteger);
     }
 
     /** Builds a quad {@code (graph, subject, predicate, object)}. */

@@ -1,25 +1,85 @@
 # RDFS ontology for the BSBM-flavored version content — open-world regime.
-# Deliberately made of positive axioms only (classes, domains, ranges): it
-# infers types instead of flagging problems, and therefore validates every
-# version of every merge policy. This exhibits the open-world blindness to
-# loss-type damage analyzed in Version-history-inference-validation.md §6.3:
-# compare with the closed-world verdicts of shacl-shapes.ttl on the same
-# histories.
+# Deliberately made of positive axioms only (classes, a small class
+# hierarchy, domains, ranges, a sub-property): it infers types instead of
+# flagging problems, and therefore validates every version of every merge
+# policy. This exhibits the open-world blindness to loss-type damage
+# analyzed in Version-history-inference-validation.md §6.3: compare with
+# the closed-world verdicts of shacl-shapes.ttl on the same histories.
+# The literal ranges match the datatypes the generator produces (plain
+# xsd:string prices/countries, typed xsd:integer ratings/delivery days),
+# so not even a D-entailment datatype clash can arise.
 @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix bsbm: <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/> .
 
-bsbm:Product a rdfs:Class .
-bsbm:Offer   a rdfs:Class .
-bsbm:Review  a rdfs:Class .
+# Classes. Producer and Vendor share a superclass, feeding rdfs:subClassOf
+# inference into the inferred-knowledge files.
+bsbm:Product        a rdfs:Class .
+bsbm:Offer          a rdfs:Class .
+bsbm:Review         a rdfs:Class .
+bsbm:ProductFeature a rdfs:Class .
+bsbm:Person         a rdfs:Class .
+bsbm:Organization   a rdfs:Class .
+bsbm:Producer       a rdfs:Class ; rdfs:subClassOf bsbm:Organization .
+bsbm:Vendor         a rdfs:Class ; rdfs:subClassOf bsbm:Organization .
 
+# Product description.
+bsbm:productFeature
+    a rdf:Property ;
+    rdfs:domain bsbm:Product ;
+    rdfs:range  bsbm:ProductFeature .
+
+bsbm:producer
+    a rdf:Property ;
+    rdfs:domain bsbm:Product ;
+    rdfs:range  bsbm:Producer .
+
+# Offer description.
+bsbm:price
+    a rdf:Property ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  xsd:string .
+
+bsbm:product
+    a rdf:Property ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  bsbm:Product .
+
+bsbm:vendor
+    a rdf:Property ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  bsbm:Vendor .
+
+bsbm:deliveryDays
+    a rdf:Property ;
+    rdfs:domain bsbm:Offer ;
+    rdfs:range  xsd:integer .
+
+# Review description. rating1 specializes a generic rating property,
+# feeding rdfs:subPropertyOf inference.
 bsbm:reviewFor
     a rdf:Property ;
     rdfs:domain bsbm:Review ;
     rdfs:range  bsbm:Product .
 
-bsbm:price
+bsbm:rating
     a rdf:Property ;
-    rdfs:domain bsbm:Offer ;
+    rdfs:range xsd:integer .
+
+bsbm:rating1
+    a rdf:Property ;
+    rdfs:subPropertyOf bsbm:rating ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  xsd:integer .
+
+bsbm:reviewer
+    a rdf:Property ;
+    rdfs:domain bsbm:Review ;
+    rdfs:range  bsbm:Person .
+
+# Vendor description.
+bsbm:country
+    a rdf:Property ;
+    rdfs:domain bsbm:Vendor ;
     rdfs:range  xsd:string .

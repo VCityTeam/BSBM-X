@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
+import org.apache.jena.graph.Node;
 import org.apache.jena.sparql.core.Quad;
 
 /**
@@ -43,7 +44,11 @@ import org.apache.jena.sparql.core.Quad;
  * </ul>
  * Transitions are named {@code V1..Vn} and merges {@code M1..Mm}, in
  * creation order. Fresh quads are BSBM-flavored Apache Jena {@link Quad}s
- * (see {@link Vocabulary}) rotating over the three named graphs.
+ * (see {@link Vocabulary}) following a 14-shape catalog cycling over the
+ * four content graphs: each block describes a product (label, type,
+ * feature, producer), a vendor (type, country), an offer on the product
+ * (price, product and vendor links, delivery days, type) and a review of
+ * it (reference, rating, reviewer) — see {@link #freshQuad()}.
  * <p>
  * Once the DAG is built, every version receives its PROV-O
  * {@code prov:generatedAtTime} and {@code prov:invalidatedAtTime}
@@ -313,25 +318,77 @@ public final class VersionGraphGenerator {
         }
     }
 
+    /** Country codes of the generated vendors, rotated per block. */
+    private static final String[] COUNTRIES = {"US", "DE", "FR", "GB", "JP"};
+
     /**
-     * A fresh, never-seen-before quad, built with Apache Jena. Quads rotate
-     * over the three named graphs and are fully determined by an internal
-     * counter, so the additions do not depend on any random stream.
+     * A fresh, never-seen-before quad, built with Apache Jena. The quads
+     * follow a BSBM-flavored catalog of 14 shapes cycling over the four
+     * content graphs: block {@code b = counter / 14} describes one product
+     * ({@code ex:product<b>}: language-tagged label, type, feature,
+     * producer), the offer's vendor ({@code ex:vendor<b>}: type, country),
+     * one offer on the product ({@code ex:offer<b>}: price, product and
+     * vendor links, delivery days, type) and one review of it
+     * ({@code ex:review<b>}: reference, rating, reviewer). Features,
+     * producers and reviewers are drawn from small shared pools, so blocks
+     * reference common entities; literals mix plain strings, language tags
+     * and typed {@code xsd:integer}s.
+     * <p>
+     * Within a block, every quad required by a SHACL witness constraint of
+     * {@code rules/shacl-shapes.ttl} is emitted <b>before</b> the quad that
+     * targets it (the label before the product type, the price and the
+     * references before the offer type, the vendor type before the vendor
+     * link), so a version built of additions alone is closed-world valid at
+     * any counter frontier: SHACL violations only appear where a deletion
+     * or a merge actually damaged the data.
+     * <p>
+     * Every quad is fully determined by the internal counter, so the
+     * additions do not depend on any random stream, and no two counter
+     * values ever produce the same quad.
      */
     private Quad freshQuad() {
         long n = quadCounter++;
-        return switch ((int) (n % 3)) {
-            case 0 -> Vocabulary.quad(
-                    Vocabulary.iri(Vocabulary.GRAPH_PRODUCTS),
-                    Vocabulary.ex("product" + n), Vocabulary.rdfType(), Vocabulary.bsbm("Product"));
-            case 1 -> Vocabulary.quad(
-                    Vocabulary.iri(Vocabulary.GRAPH_OFFERS),
-                    Vocabulary.ex("offer" + n), Vocabulary.bsbm("price"),
-                    Vocabulary.literal((10 + n * 7 % 90) + ".0"));
-            default -> Vocabulary.quad(
-                    Vocabulary.iri(Vocabulary.GRAPH_REVIEWS),
-                    Vocabulary.ex("review" + n), Vocabulary.bsbm("reviewFor"),
-                    Vocabulary.ex("product" + (n - 2)));
+        long block = n / 14;
+        Node products = Vocabulary.iri(Vocabulary.GRAPH_PRODUCTS);
+        Node offers = Vocabulary.iri(Vocabulary.GRAPH_OFFERS);
+        Node reviews = Vocabulary.iri(Vocabulary.GRAPH_REVIEWS);
+        Node vendors = Vocabulary.iri(Vocabulary.GRAPH_VENDORS);
+        Node product = Vocabulary.ex("product" + block);
+        Node offer = Vocabulary.ex("offer" + block);
+        Node review = Vocabulary.ex("review" + block);
+        Node vendor = Vocabulary.ex("vendor" + block);
+        return switch ((int) (n % 14)) {
+            // The block's product: label, type, feature and producer.
+            case 0 -> Vocabulary.quad(products, product,
+                    Vocabulary.label(), Vocabulary.langLiteral("Product " + block, "en"));
+            case 1 -> Vocabulary.quad(products, product,
+                    Vocabulary.rdfType(), Vocabulary.bsbm("Product"));
+            case 2 -> Vocabulary.quad(products, product,
+                    Vocabulary.bsbm("productFeature"), Vocabulary.ex("feature" + block % 7));
+            case 3 -> Vocabulary.quad(products, product,
+                    Vocabulary.bsbm("producer"), Vocabulary.ex("producer" + block % 5));
+            // The vendor of the block's offer: type and country.
+            case 4 -> Vocabulary.quad(vendors, vendor,
+                    Vocabulary.rdfType(), Vocabulary.bsbm("Vendor"));
+            case 5 -> Vocabulary.quad(vendors, vendor,
+                    Vocabulary.bsbm("country"),
+                    Vocabulary.literal(COUNTRIES[(int) (block % COUNTRIES.length)]));
+            // The offer on the block's product: price, references, delivery
+            // days, type.
+            case 6 -> Vocabulary.quad(offers, offer,
+                    Vocabulary.bsbm("price"), Vocabulary.literal((10 + n * 7 % 90) + "." + n % 10));
+            case 7 -> Vocabulary.quad(offers, offer, Vocabulary.bsbm("product"), product);
+            case 8 -> Vocabulary.quad(offers, offer, Vocabulary.bsbm("vendor"), vendor);
+            case 9 -> Vocabulary.quad(offers, offer,
+                    Vocabulary.bsbm("deliveryDays"), Vocabulary.integerLiteral(1 + n % 7));
+            case 10 -> Vocabulary.quad(offers, offer,
+                    Vocabulary.rdfType(), Vocabulary.bsbm("Offer"));
+            // The review of the block's product: reference, rating, reviewer.
+            case 11 -> Vocabulary.quad(reviews, review, Vocabulary.bsbm("reviewFor"), product);
+            case 12 -> Vocabulary.quad(reviews, review,
+                    Vocabulary.bsbm("rating1"), Vocabulary.integerLiteral(1 + n % 10));
+            default -> Vocabulary.quad(reviews, review,
+                    Vocabulary.bsbm("reviewer"), Vocabulary.ex("person" + block % 6));
         };
     }
 }

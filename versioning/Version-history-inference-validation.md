@@ -387,16 +387,23 @@ usage error. `Main` also accepts `--rules <file>` (and `--rule-language`) to run
 inline after generating and reloading each policy's export.
 
 Three example rule files over the BSBM-flavored vocabulary of the generator live in
-`src/main/resources/rules/`:
+`src/main/resources/rules/`, together covering every constraint family of §7:
 
-- `shacl-shapes.ttl` (CWA): referential integrity — every `bsbm:reviewFor` value must be a
-  declared `bsbm:Product` (deterministic-witness constraint, §7.2) — and upper bounds — at most
-  one well-formed price per offer (§7.1). Against generated histories this detects the dangling
-  references that $\cap$ and $\Delta$ merges (and deleting transitions) produce.
-- `rdfs-ontology.ttl` (OWA): classes, domains and ranges only — deliberately all-positive, to
-  exhibit §6.3's blindness: every version of every policy validates.
+- `shacl-shapes.ttl` (CWA): deterministic-witness constraints (§7.2) — every `bsbm:reviewFor`,
+  `bsbm:product` and `bsbm:vendor` value must be a declared entity of the right class —,
+  non-deterministic witness constraints via `sh:targetClass` (§7.1–§7.2) — a declared product
+  keeps its label, a declared offer keeps its price and its product link —, upper bounds (§7.1)
+  — at most one price/rating/country per subject — and intrinsic constraints (§7.4) — datatypes,
+  patterns, the 1..10 rating scale. Against generated histories this detects the dangling
+  references and lost witnesses that $\cap$ and $\Delta$ merges (and deleting transitions)
+  produce.
+- `rdfs-ontology.ttl` (OWA): classes (with a small `rdfs:subClassOf` hierarchy), domains, ranges
+  and a `rdfs:subPropertyOf` — deliberately all-positive, to exhibit §6.3's blindness: every
+  version of every policy validates.
 - `owl-ontology.ttl` (OWA): the same vocabulary with negative axioms (pairwise class
-  disjointness, functional `bsbm:price`), giving the OWA regime something to refute.
+  disjointness, functional `bsbm:price`, `bsbm:rating1`, `bsbm:deliveryDays` on literals — plus
+  functional `bsbm:product`, `bsbm:vendor`, `bsbm:producer` on IRIs, which illustrate the
+  non-UNA trap of §6.3 — and an `owl:inverseOf`), giving the OWA regime something to refute.
 
 **Executable metagraph counterpart.** The policy-level part of this formalization is also
 encoded as executable Jena forward rules over the PROV-O export
