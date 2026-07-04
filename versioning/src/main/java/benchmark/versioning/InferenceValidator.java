@@ -1,11 +1,14 @@
 package benchmark.versioning;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -18,9 +21,15 @@ import org.apache.jena.graph.Node;
 import org.apache.jena.rdf.model.InfModel;
 import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.ModelFactory;
+import org.apache.jena.rdf.model.Property;
+import org.apache.jena.rdf.model.RDFNode;
+import org.apache.jena.rdf.model.StmtIterator;
 import org.apache.jena.reasoner.Reasoner;
 import org.apache.jena.reasoner.ReasonerRegistry;
 import org.apache.jena.reasoner.ValidityReport;
+import org.apache.jena.reasoner.rulesys.GenericRuleReasoner;
+import org.apache.jena.reasoner.rulesys.Rule;
+import org.apache.jena.riot.Lang;
 import org.apache.jena.riot.RDFDataMgr;
 import org.apache.jena.riot.RiotException;
 import org.apache.jena.shacl.ShaclValidator;
@@ -53,11 +62,28 @@ import org.apache.jena.sparql.core.Quad;
  *       and the ontology beyond what is asserted — can be materialized
  *       ({@link #inferredKnowledge}) and exported next to the version's
  *       N-Quads file as {@code <id>-<rdfs|owl>-infered.nq}
- *       ({@link #writeInferredFiles}).</li>
+ *       ({@link #writeInferredFiles});</li>
+ *   <li>independently of the regime, a <b>metagraph</b> rule set (native
+ *       Apache Jena rule syntax, e.g. {@code rules/metagraph.rules}) can be
+ *       run over the PROV-O description of the history enriched with the
+ *       per-version verdicts as {@code mg:valid} facts:
+ *       {@link #inferMetagraph} re-derives the merge outcomes at the
+ *       metagraph level and cross-checks them against the engine's
+ *       classification, and {@link #writeMetagraphFile} exports the derived
+ *       statements as {@code metagraph-<shacl|rdfs|owl>-infered.ttl}
+ *       (README §8).</li>
  * </ul>
  * Instances are immutable and reusable across versions and histories.
  */
 public final class InferenceValidator {
+
+    /**
+     * Namespace of the derived metagraph vocabulary ({@code mg:}) of the
+     * metagraph rule set (README §8): the {@code mg:valid} and
+     * {@code mg:hasInvalidParent} facts asserted by {@link #inferMetagraph}
+     * and every term the rules derive ({@code mg:outcome}, …).
+     */
+    public static final String META_NS = "http://example.org/versioning/meta#";
 
     /** The validity verdict of a single version, with its violation reports. */
     public record VersionValidity(String versionId, boolean valid, List<String> violations) { }
@@ -114,6 +140,37 @@ public final class InferenceValidator {
                     + outcomeCount(MergeOutcome.EMERGENT_VIOLATION) + " emergent-violation, "
                     + outcomeCount(MergeOutcome.REPAIRED) + " repaired, "
                     + outcomeCount(MergeOutcome.INHERITED_VIOLATION) + " inherited-violation";
+        }
+    }
+
+    /**
+     * The metagraph verdict of one merge node (README §8): the engine's
+     * outcome (§8 taxonomy, {@link MergeOutcome}) crossed with the
+     * {@code mg:outcome} individual(s) the metagraph rules derived for the
+     * merge entity.
+     */
+    public record MetagraphAssessment(String mergeId, MergeOutcome engineOutcome,
+                                      Set<MergeOutcome> ruleOutcomes) {
+
+        /** Whether the rules derived exactly the engine's outcome. */
+        public boolean agrees() {
+            return ruleOutcomes.equals(Set.of(engineOutcome));
+        }
+    }
+
+    /**
+     * The result of running a metagraph rule set over a history (README §8):
+     * the full inference model over the PROV-O description (asserted plus
+     * derived statements), the derived statements alone, and the per-merge
+     * agreement between the rule-derived {@code mg:outcome} and the engine's
+     * outcome taxonomy.
+     */
+    public record MetagraphReport(InfModel inference, Model derived,
+                                  List<MetagraphAssessment> merges) {
+
+        /** Whether the rules re-derived the engine's outcome for every merge. */
+        public boolean allAgree() {
+            return merges.stream().allMatch(MetagraphAssessment::agrees);
         }
     }
 
@@ -334,6 +391,150 @@ public final class InferenceValidator {
                     MergeOutcome.of(invalidParents.isEmpty(), mergeValid)));
         }
         return new HistoryReport(language, List.copyOf(verdicts), List.copyOf(merges));
+    }
+
+    /**
+     * Parses a <b>metagraph</b> rule set: a file in the native Apache Jena
+     * rule syntax (e.g. {@code rules/metagraph.rules}) — not RDF, so it is
+     * neither a {@link RuleLanguage} nor loadable with {@link #fromFile}.
+     * These rules reason over the PROV-O description of the version graph
+     * (README §8), unlike the SHACL/RDFS/OWL rule sets, which evaluate the
+     * versions' content.
+     */
+    public static List<Rule> loadMetagraphRules(Path rulesFile) throws IOException {
+        if (!Files.isRegularFile(rulesFile)) {
+            throw new IOException("Missing metagraph rules file: " + rulesFile);
+        }
+        try (BufferedReader reader = Files.newBufferedReader(rulesFile, StandardCharsets.UTF_8)) {
+            return Rule.parseRules(Rule.rulesParserFromReader(reader));
+        } catch (Rule.ParserException e) {
+            throw new IOException("Invalid Jena rules in metagraph rules file " + rulesFile, e);
+        }
+    }
+
+    /**
+     * Runs a <b>metagraph</b> rule set (README §8) over the PROV-O
+     * description of the given versions: validates the history with this
+     * validator's rules, then delegates to
+     * {@link #inferMetagraph(Collection, MergePolicy, List, HistoryReport)}.
+     */
+    public MetagraphReport inferMetagraph(Collection<Version> versions, MergePolicy policy,
+                                          List<Rule> metagraphRules) {
+        return inferMetagraph(versions, policy, metagraphRules, validateHistory(versions));
+    }
+
+    /**
+     * Runs a <b>metagraph</b> rule set (README §8) over the PROV-O
+     * description of the given versions, reusing already-computed verdicts:
+     * <ol>
+     *   <li>builds the PROV-O model of the history ({@link ProvOWriter});</li>
+     *   <li>asserts every verdict as an {@code mg:valid} fact on its version
+     *       entity, and every invalid parent of a merge as an
+     *       {@code mg:hasInvalidParent} fact — the latter keeps the rules'
+     *       closed-world outcome rules stable under forward chaining, since
+     *       the facts are in the base data before any rule fires;</li>
+     *   <li>computes the deductive closure of the metagraph rules with a
+     *       forward {@link GenericRuleReasoner}, and collects the derived
+     *       statements and the rule-derived outcome of every merge.</li>
+     * </ol>
+     */
+    public MetagraphReport inferMetagraph(Collection<Version> versions, MergePolicy policy,
+                                          List<Rule> metagraphRules, HistoryReport verdicts) {
+        Model provenance = ProvOWriter.model(versions, policy);
+        Property valid = provenance.createProperty(META_NS + "valid");
+        for (VersionValidity verdict : verdicts.versions()) {
+            provenance.getResource(ProvOWriter.entityIriOf(verdict.versionId()))
+                    .addProperty(valid, provenance.createTypedLiteral(verdict.valid()));
+        }
+        Property hasInvalidParent = provenance.createProperty(META_NS + "hasInvalidParent");
+        for (MergeAssessment merge : verdicts.merges()) {
+            for (String parentId : merge.invalidParentIds()) {
+                provenance.getResource(ProvOWriter.entityIriOf(merge.mergeId()))
+                        .addProperty(hasInvalidParent,
+                                provenance.getResource(ProvOWriter.entityIriOf(parentId)));
+            }
+        }
+
+        GenericRuleReasoner metagraphReasoner = new GenericRuleReasoner(metagraphRules);
+        metagraphReasoner.setMode(GenericRuleReasoner.FORWARD);
+        InfModel inference = ModelFactory.createInfModel(metagraphReasoner, provenance);
+
+        Model derived = ModelFactory.createDefaultModel();
+        derived.setNsPrefixes(provenance);
+        derived.setNsPrefix("mg", META_NS);
+        inference.listStatements().forEachRemaining(statement -> {
+            if (!provenance.contains(statement)) {
+                derived.add(statement);
+            }
+        });
+
+        Property outcome = inference.createProperty(META_NS + "outcome");
+        List<MetagraphAssessment> merges = new ArrayList<>();
+        for (MergeAssessment merge : verdicts.merges()) {
+            Set<MergeOutcome> ruleOutcomes = EnumSet.noneOf(MergeOutcome.class);
+            StmtIterator it = inference.getResource(ProvOWriter.entityIriOf(merge.mergeId()))
+                    .listProperties(outcome);
+            while (it.hasNext()) {
+                MergeOutcome mapped = outcomeOf(it.next().getObject());
+                if (mapped != null) {
+                    ruleOutcomes.add(mapped);
+                }
+            }
+            merges.add(new MetagraphAssessment(merge.mergeId(), merge.outcome(), ruleOutcomes));
+        }
+        return new MetagraphReport(inference, derived, List.copyOf(merges));
+    }
+
+    /**
+     * Maps an {@code mg:outcome} individual derived by the metagraph rules
+     * ({@code mg:Preserved}, {@code mg:EmergentViolation}, {@code mg:Repaired},
+     * {@code mg:InheritedViolation}) to the §8 taxonomy, or {@code null} for
+     * any other node.
+     */
+    private static MergeOutcome outcomeOf(RDFNode node) {
+        if (!node.isURIResource() || !node.asResource().getURI().startsWith(META_NS)) {
+            return null;
+        }
+        return switch (node.asResource().getLocalName()) {
+            case "Preserved" -> MergeOutcome.PRESERVED;
+            case "EmergentViolation" -> MergeOutcome.EMERGENT_VIOLATION;
+            case "Repaired" -> MergeOutcome.REPAIRED;
+            case "InheritedViolation" -> MergeOutcome.INHERITED_VIOLATION;
+            default -> null;
+        };
+    }
+
+    /**
+     * Name of the inferred-metagraph file of a history validated by this
+     * validator: {@code metagraph-<shacl|rdfs|owl>-infered.ttl}, located
+     * next to the history's {@code provenance.ttl}.
+     */
+    public String metagraphFileNameOf() {
+        return "metagraph-" + language.name().toLowerCase(Locale.ROOT) + "-infered.ttl";
+    }
+
+    /**
+     * Writes the statements derived by the metagraph rules into
+     * {@code <directory>/metagraph-<shacl|rdfs|owl>-infered.ttl}: a {@code #}
+     * comment header followed by the derived statements as Turtle.
+     *
+     * @return the file written
+     */
+    public Path writeMetagraphFile(MetagraphReport report, Path directory) throws IOException {
+        Files.createDirectories(directory);
+        StringBuilder sb = new StringBuilder();
+        sb.append("# ===== Inferred metagraph export (Turtle) =====\n");
+        sb.append("# derived by the metagraph rules from ").append(ProvOReader.PROVENANCE_FILE)
+                .append(" + the per-version mg:valid verdicts\n");
+        sb.append("# verdict rule language: ").append(language)
+                .append(" (").append(language.getAssumption()).append(" regime)\n");
+        sb.append("# derived statements: ").append(report.derived().size()).append('\n');
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        RDFDataMgr.write(out, report.derived(), Lang.TURTLE);
+        sb.append(out.toString(StandardCharsets.UTF_8));
+        Path file = directory.resolve(metagraphFileNameOf());
+        Files.writeString(file, sb.toString(), StandardCharsets.UTF_8);
+        return file;
     }
 
     /** Closed-world constraint validation with the Jena SHACL engine. */

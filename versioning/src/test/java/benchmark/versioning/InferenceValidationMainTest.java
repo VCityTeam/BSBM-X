@@ -1,6 +1,7 @@
 package benchmark.versioning;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,6 +11,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.apache.jena.rdf.model.Model;
+import org.apache.jena.rdf.model.Property;
+import org.apache.jena.rdf.model.RDFNode;
+import org.apache.jena.reasoner.rulesys.Rule;
+import org.apache.jena.riot.RDFDataMgr;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -97,6 +103,43 @@ class InferenceValidationMainTest {
             assertTrue(children.noneMatch(p -> p.getFileName().toString().endsWith("-infered.nq")),
                     "the SHACL constraint regime entails nothing, so no inferred files");
         }
+    }
+
+    // --- The metagraph rules (--metagraph-rules) -----------------------------
+
+    @Test
+    void metagraphRulesReproduceTheEngineMergeOutcomes() throws IOException {
+        VersionGraph graph = exportHistory(tmp, MergePolicy.UNION);
+        InferenceValidator validator =
+                InferenceValidator.fromFile(RULES_DIR.resolve("shacl-shapes.ttl"));
+        List<Rule> metagraphRules =
+                InferenceValidator.loadMetagraphRules(RULES_DIR.resolve("metagraph.rules"));
+
+        InferenceValidator.MetagraphReport meta =
+                validator.inferMetagraph(graph.getVersions(), MergePolicy.UNION, metagraphRules);
+
+        assertFalse(meta.merges().isEmpty(), "the generated history has a merge");
+        assertTrue(meta.allAgree(),
+                "the metagraph rules must re-derive the engine's outcome for every merge: "
+                        + meta.merges());
+    }
+
+    @Test
+    void metagraphOptionWritesTheInferredMetagraphFile() throws IOException {
+        exportHistory(tmp, MergePolicy.UNION);
+
+        int exit = InferenceValidationMain.run(new String[] {
+                "--rules", RULES_DIR.resolve("shacl-shapes.ttl").toString(),
+                "--dir", tmp.toString(),
+                "--metagraph-rules", RULES_DIR.resolve("metagraph.rules").toString()});
+
+        assertTrue(exit == 0 || exit == 1, "the run must complete (verdict-dependent exit)");
+        Path file = tmp.resolve("metagraph-shacl-infered.ttl");
+        assertTrue(Files.isRegularFile(file), "metagraph-shacl-infered.ttl must be written");
+        Model derived = RDFDataMgr.loadModel(file.toUri().toString());
+        Property outcome = derived.createProperty(InferenceValidator.META_NS + "outcome");
+        assertTrue(derived.listStatements(null, outcome, (RDFNode) null).hasNext(),
+                "the derived metagraph must classify the merge");
     }
 
     // --- Usage errors -------------------------------------------------------

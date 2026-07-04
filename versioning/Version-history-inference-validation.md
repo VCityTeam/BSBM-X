@@ -398,6 +398,20 @@ Three example rule files over the BSBM-flavored vocabulary of the generator live
 - `owl-ontology.ttl` (OWA): the same vocabulary with negative axioms (pairwise class
   disjointness, functional `bsbm:price`), giving the OWA regime something to refute.
 
+**Executable metagraph counterpart.** The policy-level part of this formalization is also
+encoded as executable Jena forward rules over the PROV-O export
+(`src/main/resources/rules/metagraph.rules`): the $\oplus$-safety matrix of §7.4 (as
+`mg:safeFor`/`mg:endangers` axioms), the containment and ∩-safety results of §7.2 (as
+`mg:datasetSubsetOf` facts with antitone/monotone `mg:owaConsistent` propagation), the outcome
+taxonomy of §8 (as `mg:outcome` rules over externally asserted `mg:valid` verdicts, with
+`mg:responsibleFor` assigning the blame of §8) and the incremental re-validation plan of §9 (as
+`mg:mustRecheck`). A Jena `GenericRuleReasoner` derives all of it directly from
+`provenance.ttl` — see README §8. The Inference validation program runs these rules with
+`--metagraph-rules <file>`: it asserts every version's $\mathrm{Valid}_R$ verdict as an
+`mg:valid` fact on the PROV-O export, cross-checks the rule-derived `mg:outcome` of every merge
+against the engine's §8 classification, and exports the derived statements as
+`metagraph-<shacl|rdfs|owl>-infered.ttl`.
+
 ## 12. Worked micro-examples
 
 Each example is executable: `InferenceValidationTest` builds exactly these graphs. Quads are

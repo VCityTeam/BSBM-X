@@ -1,0 +1,386 @@
+# Reasoning rules over the metagraph — the PROV-O description of the version
+# DAG (provenance.ttl) — in Apache Jena rule syntax (GenericRuleReasoner).
+# They classify the versions, close the DAG and propagate validity; they never
+# look at the RDF content S(v) of the versions (that is the job of the
+# SHACL/RDFS/OWL rule sets of the Inference validation program).
+#
+# Optional external facts, asserted by InferenceValidator.inferMetagraph with
+# exactly these lexical forms (rule matching compares nodes, not values):
+#   ver:<id> mg:valid / mg:owaConsistent / mg:intrinsicallyValid
+#            'true|false'^^xsd:boolean
+#
+# Section references (§…) point to Version-history-inference-validation.md;
+# lifecycle rules 1..4 point to README §5.8 / VersionTimestamps.
+
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>.
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>.
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#>.
+@prefix prov: <http://www.w3.org/ns/prov#>.
+@prefix ver:  <http://example.org/versioning/version/>.
+@prefix act:  <http://example.org/versioning/activity/>.
+@prefix agt:  <http://example.org/versioning/agent/>.
+@prefix mg:   <http://example.org/versioning/meta#>.
+
+# ============================================================================
+# 1. AXIOMS — the three global merge policies and their algebra (§2)
+# ============================================================================
+
+# The three global merge policies ⊕ ∈ {∪, ∩, Δ} and their set operator.
+-> (agt:policy-UNION                rdf:type mg:MergePolicyAgent).
+-> (agt:policy-INTERSECTION         rdf:type mg:MergePolicyAgent).
+-> (agt:policy-SYMMETRIC_DIFFERENCE rdf:type mg:MergePolicyAgent).
+
+-> (agt:policy-UNION                mg:setOperator 'union').
+-> (agt:policy-INTERSECTION         mg:setOperator 'intersection').
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:setOperator 'symmetric-difference').
+
+# All three operators are commutative and associative (n-ary merges are
+# well defined, §2).
+-> (agt:policy-UNION                mg:commutative 'true'^^xsd:boolean).
+-> (agt:policy-INTERSECTION         mg:commutative 'true'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:commutative 'true'^^xsd:boolean).
+-> (agt:policy-UNION                mg:associative 'true'^^xsd:boolean).
+-> (agt:policy-INTERSECTION         mg:associative 'true'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:associative 'true'^^xsd:boolean).
+
+# ∪ and ∩ are idempotent; Δ is not (S Δ S = ∅, §7.3).
+-> (agt:policy-UNION                mg:idempotent 'true'^^xsd:boolean).
+-> (agt:policy-INTERSECTION         mg:idempotent 'true'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:idempotent 'false'^^xsd:boolean).
+
+# ∪ contains every parent, ∩ is contained in every parent, Δ is neither and
+# is parity-sensitive at arity >= 3 (§7.3).
+-> (agt:policy-UNION                mg:inflationary   'true'^^xsd:boolean).
+-> (agt:policy-INTERSECTION         mg:inflationary   'false'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:inflationary   'false'^^xsd:boolean).
+-> (agt:policy-UNION                mg:deflationary   'false'^^xsd:boolean).
+-> (agt:policy-INTERSECTION         mg:deflationary   'true'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:deflationary   'false'^^xsd:boolean).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:paritySensitive 'true'^^xsd:boolean).
+
+# Constraint families (§7) and the ⊕-safety matrix (§7.4/§9):
+# mg:safeFor = a merge of valid parents cannot violate the family;
+# mg:endangers = the family must be re-checked after every merge.
+-> (mg:IntrinsicConstraint            rdf:type mg:ConstraintFamily).
+-> (mg:DeterministicWitnessConstraint rdf:type mg:ConstraintFamily).
+-> (mg:WitnessConstraint              rdf:type mg:ConstraintFamily).
+-> (mg:UpperBoundConstraint           rdf:type mg:ConstraintFamily).
+-> (mg:OwaConsistency                 rdf:type mg:ConstraintFamily).
+
+-> (mg:IntrinsicConstraint            rdfs:comment 'single-atom guard, per-triple head: sh:datatype, sh:pattern, sh:nodeKind').
+-> (mg:DeterministicWitnessConstraint rdfs:comment 'witness uniquely determined by the guard: sh:class via sh:targetSubjectsOf').
+-> (mg:WitnessConstraint              rdfs:comment 'non-deterministic witness: sh:minCount, sh:hasValue via sh:targetClass').
+-> (mg:UpperBoundConstraint           rdfs:comment 'negative/upper-bound: sh:maxCount, owl:FunctionalProperty, owl:disjointWith, sh:closed').
+-> (mg:OwaConsistency                 rdfs:comment 'open-world consistency Cons_R under an RDFS/OWL ontology with negative axioms').
+
+# ∪ manufactures conflicts (§7.1); it never loses a witness.
+-> (agt:policy-UNION mg:safeFor   mg:IntrinsicConstraint).
+-> (agt:policy-UNION mg:safeFor   mg:DeterministicWitnessConstraint).
+-> (agt:policy-UNION mg:safeFor   mg:WitnessConstraint).
+-> (agt:policy-UNION mg:endangers mg:UpperBoundConstraint).
+-> (agt:policy-UNION mg:endangers mg:OwaConsistency).
+
+# ∩ manufactures losses (§7.2); OWA consistency is ∩-safe by antitonicity.
+# Deterministic witnesses are endangered only by the named-graph caveat (§5.1).
+-> (agt:policy-INTERSECTION mg:safeFor   mg:IntrinsicConstraint).
+-> (agt:policy-INTERSECTION mg:safeFor   mg:UpperBoundConstraint).
+-> (agt:policy-INTERSECTION mg:safeFor   mg:OwaConsistency).
+-> (agt:policy-INTERSECTION mg:endangers mg:WitnessConstraint).
+-> (agt:policy-INTERSECTION mg:endangers mg:DeterministicWitnessConstraint).
+
+# Δ triggers both damage types (§7.3); only the intrinsic family is safe
+# (locality lemma, §7.4).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:safeFor   mg:IntrinsicConstraint).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:endangers mg:DeterministicWitnessConstraint).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:endangers mg:WitnessConstraint).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:endangers mg:UpperBoundConstraint).
+-> (agt:policy-SYMMETRIC_DIFFERENCE mg:endangers mg:OwaConsistency).
+
+# ============================================================================
+# 2. PROV-O COMPLETION — inverse and implied PROV statements
+# ============================================================================
+
+# Keep generation closed under inversion.
+[provGenInverse1: (?e prov:wasGeneratedBy ?a) -> (?a prov:generated ?e)]
+[provGenInverse2: (?a prov:generated ?e)     -> (?e prov:wasGeneratedBy ?a)]
+
+# Type completion from the PROV property signatures.
+[provUsedTypes:    (?a prov:used ?e)           -> (?a rdf:type prov:Activity), (?e rdf:type prov:Entity)]
+[provGenTypes:     (?e prov:wasGeneratedBy ?a) -> (?e rdf:type prov:Entity), (?a rdf:type prov:Activity)]
+[provDerivedTypes: (?v prov:wasDerivedFrom ?u) -> (?v rdf:type prov:Entity), (?u rdf:type prov:Entity)]
+[provAgentType:    (?ag rdf:type prov:SoftwareAgent) -> (?ag rdf:type prov:Agent)]
+
+# prov:wasInfluencedBy generalizes derivation, generation, usage, association.
+[provInfluence1: (?v prov:wasDerivedFrom ?u)    -> (?v prov:wasInfluencedBy ?u)]
+[provInfluence2: (?e prov:wasGeneratedBy ?a)    -> (?e prov:wasInfluencedBy ?a)]
+[provInfluence3: (?a prov:used ?e)              -> (?a prov:wasInfluencedBy ?e)]
+[provInfluence4: (?a prov:wasAssociatedWith ?g) -> (?a prov:wasInfluencedBy ?g)]
+
+# An activity that used the output of another activity was informed by it.
+[provCommunication: (?a2 prov:used ?e), (?e prov:wasGeneratedBy ?a1)
+                    -> (?a2 prov:wasInformedBy ?a1)]
+
+# A version generated under the policy agent is attributed to the policy —
+# the §8 blame target for emergent violations.
+[provAttribution: (?e prov:wasGeneratedBy ?a), (?a prov:wasAssociatedWith ?g)
+                  -> (?e prov:wasAttributedTo ?g)]
+
+# Every prov:Entity of this metagraph is a version.
+[versionClass: (?v rdf:type prov:Entity) -> (?v rdf:type mg:Version)]
+
+# ============================================================================
+# 3. NODE-KIND CLASSIFICATION — root / transition / merge / fork / final (§3)
+#    The noValue guards below are sound: prov:wasDerivedFrom,
+#    prov:wasAssociatedWith and prov:invalidatedAtTime are asserted-only
+#    (never derived by any rule of this file).
+# ============================================================================
+
+# Root: no derivation (|pre(v)| = 0).
+[rootVersion: (?v rdf:type prov:Entity), noValue(?v, prov:wasDerivedFrom)
+              -> (?v rdf:type mg:RootVersion)]
+
+# Merge, detected structurally: at least two distinct parents.
+[mergeByArity: (?v prov:wasDerivedFrom ?u1), (?v prov:wasDerivedFrom ?u2),
+               notEqual(?u1, ?u2)
+               -> (?v rdf:type mg:MergeVersion)]
+
+# Merge, detected by provenance: only merge activities are associated with
+# the policy agent (ProvOWriter's convention).
+[mergeByPolicy: (?v prov:wasGeneratedBy ?a), (?a prov:wasAssociatedWith ?p),
+                (?p rdf:type prov:SoftwareAgent)
+                -> (?v rdf:type mg:MergeVersion),
+                   (?a rdf:type mg:MergeActivity),
+                   (?v mg:mergedUnder ?p)]
+
+# Transition: generated by an activity with no associated agent (|pre(v)| = 1).
+[transitionVersion: (?v prov:wasGeneratedBy ?a), noValue(?a, prov:wasAssociatedWith)
+                    -> (?v rdf:type mg:TransitionVersion),
+                       (?a rdf:type mg:TransitionActivity)]
+
+# A transition is a PROV revision of its single parent.
+[transitionRevision: (?v rdf:type mg:TransitionVersion), (?v prov:wasDerivedFrom ?u)
+                     -> (?v prov:wasRevisionOf ?u)]
+
+# Octopus merge: three pairwise distinct parents.
+[octopusMerge: (?v prov:wasDerivedFrom ?u1), (?v prov:wasDerivedFrom ?u2),
+               (?v prov:wasDerivedFrom ?u3),
+               notEqual(?u1, ?u2), notEqual(?u1, ?u3), notEqual(?u2, ?u3)
+               -> (?v rdf:type mg:OctopusMerge)]
+[octopusIsMerge: (?v rdf:type mg:OctopusMerge) -> (?v rdf:type mg:MergeVersion)]
+
+# Fork: two distinct children of the same parent; the children are siblings
+# and PROV alternates.
+[forkVersion: (?v1 prov:wasDerivedFrom ?u), (?v2 prov:wasDerivedFrom ?u),
+              notEqual(?v1, ?v2)
+              -> (?u rdf:type mg:ForkVersion), (?v1 mg:siblingOf ?v2)]
+[siblingAlternate: (?v1 mg:siblingOf ?v2) -> (?v1 prov:alternateOf ?v2)]
+
+# Final: still valid, no invalidation instant (lifecycle rule 4).
+[finalVersion: (?v rdf:type prov:Entity), noValue(?v, prov:invalidatedAtTime)
+               -> (?v rdf:type mg:FinalVersion)]
+[supersededVersion: (?v prov:invalidatedAtTime ?t) -> (?v rdf:type mg:SupersededVersion)]
+
+# Policy-specific merge classes.
+[unionMergeClass:   (?v mg:mergedUnder agt:policy-UNION)
+                    -> (?v rdf:type mg:UnionMerge)]
+[intersectionMergeClass: (?v mg:mergedUnder agt:policy-INTERSECTION)
+                    -> (?v rdf:type mg:IntersectionMerge)]
+[symDiffMergeClass: (?v mg:mergedUnder agt:policy-SYMMETRIC_DIFFERENCE)
+                    -> (?v rdf:type mg:SymmetricDifferenceMerge)]
+
+# ============================================================================
+# 4. ANCESTRY — the transitive closure of the derivation DAG
+# ============================================================================
+
+# Transitive closure of derivation, plus its inverse.
+[ancestorBase:  (?v prov:wasDerivedFrom ?u) -> (?v mg:hasAncestor ?u)]
+[ancestorTrans: (?v mg:hasAncestor ?u), (?u mg:hasAncestor ?w) -> (?v mg:hasAncestor ?w)]
+[descendant:    (?v mg:hasAncestor ?u) -> (?u mg:hasDescendant ?v)]
+
+# Reflexive-transitive variant, used for merge-base candidates.
+[ancestorSelf:    (?v rdf:type prov:Entity) -> (?v mg:hasAncestorOrSelf ?v)]
+[ancestorOrSelf:  (?v mg:hasAncestor ?u)    -> (?v mg:hasAncestorOrSelf ?u)]
+
+# Derivation implies temporal precedence (lifecycle rule 1).
+[precedes: (?v mg:hasAncestor ?u) -> (?u mg:precedes ?v)]
+
+# Merge-base candidate: common ancestor-or-self of two distinct parents of a
+# merge. The NEAREST base (git's merge-base) needs negation over a derived
+# closure and is deliberately left out (unsound in pure forward mode).
+[mergeBaseCandidate: (?m rdf:type mg:MergeVersion),
+                     (?m prov:wasDerivedFrom ?u1), (?m prov:wasDerivedFrom ?u2),
+                     notEqual(?u1, ?u2),
+                     (?u1 mg:hasAncestorOrSelf ?a), (?u2 mg:hasAncestorOrSelf ?a)
+                     -> (?a mg:mergeBaseCandidateOf ?m)]
+
+# A parent is superseded by its followers (lifecycle rule 2).
+# prov:wasInvalidatedBy itself is NOT derived: a fork has several follower
+# activities and PROV allows only one invalidation event per entity.
+[superseded: (?v prov:wasDerivedFrom ?u), (?v prov:wasGeneratedBy ?a)
+             -> (?u mg:supersededBy ?v), (?u mg:invalidatedByActivity ?a)]
+[supersededAt: (?u mg:supersededBy ?v), (?v prov:generatedAtTime ?t)
+               -> (?u mg:supersededAtTime ?t)]
+
+# ============================================================================
+# 5. DATASET-CONTAINMENT LATTICE — what ⊕ guarantees about S(v) without
+#    looking at a single quad
+# ============================================================================
+
+# ∪ is inflationary: S(u) ⊆ S(m) for every parent u.
+[subsetUnderInflationary: (?m mg:mergedUnder ?p), (?p mg:inflationary 'true'^^xsd:boolean),
+                          (?m prov:wasDerivedFrom ?u)
+                          -> (?u mg:datasetSubsetOf ?m)]
+
+# ∩ is deflationary: S(m) ⊆ S(u) for every parent u.
+[subsetUnderDeflationary: (?m mg:mergedUnder ?p), (?p mg:deflationary 'true'^^xsd:boolean),
+                          (?m prov:wasDerivedFrom ?u)
+                          -> (?m mg:datasetSubsetOf ?u)]
+
+# Every merge result is covered by the union of its parents' quads (locality
+# lemma, §7.4); transitions are not (their additions are new quads).
+[mergeCovered: (?m rdf:type mg:MergeVersion)
+               -> (?m mg:quadsCoveredByParents 'true'^^xsd:boolean)]
+
+# ⊆ is a preorder; mutual inclusion is dataset equality.
+[subsetReflexive: (?v rdf:type prov:Entity) -> (?v mg:datasetSubsetOf ?v)]
+[subsetTransitive: (?x mg:datasetSubsetOf ?y), (?y mg:datasetSubsetOf ?z)
+                   -> (?x mg:datasetSubsetOf ?z)]
+[subsetAntisym: (?x mg:datasetSubsetOf ?y), (?y mg:datasetSubsetOf ?x), notEqual(?x, ?y)
+                -> (?x mg:datasetEquals ?y)]
+[equalsSymmetric: (?x mg:datasetEquals ?y) -> (?y mg:datasetEquals ?x)]
+[equalsToSubsets: (?x mg:datasetEquals ?y)
+                  -> (?x mg:datasetSubsetOf ?y), (?y mg:datasetSubsetOf ?x)]
+
+# π preserves inclusion (§5.1) and cl_R is monotone (§5.2): a dataset-subset
+# entails an entailment-subset.
+[entailmentMonotone: (?x mg:datasetSubsetOf ?y) -> (?x mg:entailmentSubsetOf ?y)]
+
+# ============================================================================
+# 6. VALIDITY PROPAGATION UNDER THE OPEN-WORLD ASSUMPTION
+#    Cons_R is antitone (§7.2); mg:owaConsistent facts are asserted
+#    externally and extended along the containment lattice of section 5.
+# ============================================================================
+
+# Downward: any subset of a consistent dataset is consistent (the ∩-safety
+# theorem of §7.2).
+[owaConsistencyDown: (?x mg:datasetSubsetOf ?y), (?y mg:owaConsistent 'true'^^xsd:boolean)
+                     -> (?x mg:owaConsistent 'true'^^xsd:boolean)]
+
+# Upward (contrapositive): any superset of an inconsistent dataset is
+# inconsistent — a ∪-merge inherits inconsistency before any reasoner runs.
+[owaInconsistencyUp: (?x mg:datasetSubsetOf ?y), (?x mg:owaConsistent 'false'^^xsd:boolean)
+                     -> (?y mg:owaConsistent 'false'^^xsd:boolean)]
+
+# Intrinsic validity is decided triple by triple (§7.4), hence antitone too.
+[intrinsicDown: (?x mg:datasetSubsetOf ?y), (?y mg:intrinsicallyValid 'true'^^xsd:boolean)
+                -> (?x mg:intrinsicallyValid 'true'^^xsd:boolean)]
+[intrinsicUp:   (?x mg:datasetSubsetOf ?y), (?x mg:intrinsicallyValid 'false'^^xsd:boolean)
+                -> (?y mg:intrinsicallyValid 'false'^^xsd:boolean)]
+
+# Bridge (enable only for RDFS/OWL, where Valid_R IS Cons_R; under SHACL the
+# two predicates are unrelated):
+# [owaIsValidity: (?v mg:owaConsistent ?b) -> (?v mg:valid ?b)]
+
+# ============================================================================
+# 7. INCREMENTAL RE-VALIDATION PLAN (§9)
+# ============================================================================
+
+# What the policy endangers must be re-checked — sound unconditionally.
+[mustRecheck: (?m mg:mergedUnder ?p), (?p mg:endangers ?f)
+              -> (?m mg:mustRecheck ?f)]
+
+# Exemption is only sound when all parents are valid for ?f (the definition
+# of ⊕-safety, §7.4); read it as advisory.
+[exemptFromRecheck: (?m mg:mergedUnder ?p), (?p mg:safeFor ?f)
+                    -> (?m mg:exemptFromRecheck ?f)]
+
+# ============================================================================
+# 8. MERGE OUTCOME TAXONOMY (§8) — parent validity × merge validity.
+#    Requires the external mg:valid facts on every version.
+# ============================================================================
+
+# Parent validity, from the external mg:valid facts.
+[invalidParent: (?m rdf:type mg:MergeVersion), (?m prov:wasDerivedFrom ?u),
+                (?u mg:valid 'false'^^xsd:boolean)
+                -> (?m mg:hasInvalidParent ?u)]
+[validParent:   (?m rdf:type mg:MergeVersion), (?m prov:wasDerivedFrom ?u),
+                (?u mg:valid 'true'^^xsd:boolean)
+                -> (?m mg:hasValidParent ?u)]
+
+# ∃ invalid parent — monotone, always sound.
+[outcomeRepaired:  (?m mg:hasInvalidParent ?u), (?m mg:valid 'true'^^xsd:boolean)
+                   -> (?m mg:outcome mg:Repaired)]
+[outcomeInherited: (?m mg:hasInvalidParent ?u), (?m mg:valid 'false'^^xsd:boolean)
+                   -> (?m mg:outcome mg:InheritedViolation)]
+
+# ∀ parents valid — closed-world: reads the absence of an invalid-parent fact
+# as "all parents valid", so every parent must carry an asserted mg:valid.
+[outcomePreserved: (?m rdf:type mg:MergeVersion), (?m mg:valid 'true'^^xsd:boolean),
+                   noValue(?m, mg:hasInvalidParent)
+                   -> (?m mg:outcome mg:Preserved)]
+[outcomeEmergent:  (?m rdf:type mg:MergeVersion), (?m mg:valid 'false'^^xsd:boolean),
+                   noValue(?m, mg:hasInvalidParent)
+                   -> (?m mg:outcome mg:EmergentViolation)]
+
+# Responsibility (§8): emergent → the policy operator; inherited → the
+# invalid branch(es).
+[blamePolicy: (?m mg:outcome mg:EmergentViolation), (?m mg:mergedUnder ?p)
+              -> (?p mg:responsibleFor ?m)]
+[blameBranch: (?m mg:outcome mg:InheritedViolation), (?m mg:hasInvalidParent ?u)
+              -> (?u mg:responsibleFor ?m)]
+
+# ============================================================================
+# 9. TEMPORAL RULES — lifecycle instants (README §5.8, VersionTimestamps)
+# ============================================================================
+
+# Observable generation order (lessThan compares xsd:dateTime values).
+[generatedBefore: (?u prov:generatedAtTime ?tu), (?v prov:generatedAtTime ?tv),
+                  lessThan(?tu, ?tv)
+                  -> (?u mg:generatedBefore ?v)]
+
+# Concurrency: the validity intervals [generatedAtTime, invalidatedAtTime)
+# of two versions overlap — they coexisted as live states of the dataset.
+[concurrentBounded: (?v1 prov:generatedAtTime ?g1), (?v1 prov:invalidatedAtTime ?i1),
+                    (?v2 prov:generatedAtTime ?g2), (?v2 prov:invalidatedAtTime ?i2),
+                    notEqual(?v1, ?v2), lessThan(?g1, ?i2), lessThan(?g2, ?i1)
+                    -> (?v1 mg:concurrentWith ?v2), (?v2 mg:concurrentWith ?v1)]
+
+# A final version (still alive) is concurrent with every version whose life
+# ends after the final one was generated…
+[concurrentWithFinal: (?v1 rdf:type mg:FinalVersion), (?v1 prov:generatedAtTime ?g1),
+                      (?v2 prov:invalidatedAtTime ?i2), lessThan(?g1, ?i2)
+                      -> (?v1 mg:concurrentWith ?v2), (?v2 mg:concurrentWith ?v1)]
+
+# …and two final versions are always concurrent (both still alive now).
+[concurrentFinals: (?v1 rdf:type mg:FinalVersion), (?v2 rdf:type mg:FinalVersion),
+                   notEqual(?v1, ?v2)
+                   -> (?v1 mg:concurrentWith ?v2)]
+
+# Close symmetry explicitly.
+[concurrentSymmetric: (?a mg:concurrentWith ?b) -> (?b mg:concurrentWith ?a)]
+
+# Lifecycle sanity — derive violation markers instead of failing.
+
+# Rule 1: every version is generated strictly after its parents.
+[violGenerationOrder: (?v prov:wasDerivedFrom ?u),
+                      (?u prov:generatedAtTime ?tu), (?v prov:generatedAtTime ?tv),
+                      ge(?tu, ?tv)
+                      -> (?v mg:violatesGenerationOrder ?u)]
+
+# Rule 2: a parent is invalidated exactly when its followers are generated.
+[violInvalidation: (?v prov:wasDerivedFrom ?u),
+                   (?u prov:invalidatedAtTime ?ti), (?v prov:generatedAtTime ?tg),
+                   notEqual(?ti, ?tg)
+                   -> (?u mg:violatesInvalidationRule ?v)]
+
+# Rule 3: all versions following a fork are generated at the same instant.
+[violForkAlignment: (?v1 prov:wasDerivedFrom ?u), (?v2 prov:wasDerivedFrom ?u),
+                    notEqual(?v1, ?v2),
+                    (?v1 prov:generatedAtTime ?t1), (?v2 prov:generatedAtTime ?t2),
+                    notEqual(?t1, ?t2)
+                    -> (?u mg:violatesForkAlignment ?v1)]
+
+# Rule 2/4 combined: a version with followers must carry an invalidation
+# instant.
+[violMissingInvalidation: (?v rdf:type mg:FinalVersion), (?v mg:supersededBy ?w)
+                          -> (?v mg:violatesLifecycle 'has followers but no prov:invalidatedAtTime')]

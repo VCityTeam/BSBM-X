@@ -6,7 +6,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.apache.jena.reasoner.rulesys.Rule;
 
 /**
  * <b>Inference validation</b> command-line program: given a set of rules
@@ -33,6 +36,16 @@ import java.util.stream.Stream;
  * (see {@link InferenceValidator#writeInferredFiles}). The optional
  * {@code --policy} parameter restricts the run to the histories whose global
  * merge policy — read from {@code provenance.ttl} — is the given one.
+ * <p>
+ * With {@code --metagraph-rules <file>} the program additionally runs a
+ * <b>metagraph</b> rule set (native Apache Jena rule syntax, e.g.
+ * {@code rules/metagraph.rules}, README §8) over the PROV-O description of
+ * each validated history, enriched with the per-version verdicts as
+ * {@code mg:valid} facts: the rule-derived merge outcomes are printed next
+ * to the engine's classification (they must agree), and the derived
+ * statements are exported as {@code metagraph-<shacl|rdfs|owl>-infered.ttl}
+ * next to {@code provenance.ttl}
+ * (see {@link InferenceValidator#inferMetagraph}).
  */
 public class InferenceValidationMain {
 
@@ -46,6 +59,12 @@ public class InferenceValidationMain {
               --policy <p>       union | intersection | symmetric-difference: only validate the
                                  histories whose global merge policy (read from provenance.ttl)
                                  is <p> (default: validate every history found)
+              --metagraph-rules <f>  metagraph rule set in native Jena rule syntax (e.g.
+                                 src/main/resources/rules/metagraph.rules): re-derives the merge
+                                 outcomes from provenance.ttl + the per-version verdicts (asserted
+                                 as mg:valid facts), reports the agreement with the engine's
+                                 classification, and writes the derived statements to
+                                 metagraph-<shacl|rdfs|owl>-infered.ttl next to provenance.ttl
             For an RDFS/OWL rule set, the inferred knowledge of every version <id>.nq is also
             materialized next to it as <id>-<rdfs|owl>-infered.nq.
             Exit code: 0 = every version valid, 1 = at least one violation, 2 = usage error.""";
@@ -65,6 +84,7 @@ public class InferenceValidationMain {
         RuleLanguage language = null;
         Path dir = Path.of(Main.DEFAULT_EXPORT_DIR);
         MergePolicy policy = null;
+        Path metagraphRulesFile = null;
         try {
             for (int i = 0; i < args.length; i += 2) {
                 String option = args[i];
@@ -77,6 +97,7 @@ public class InferenceValidationMain {
                     case "--language" -> language = parseLanguage(value);
                     case "--dir" -> dir = Path.of(value);
                     case "--policy" -> policy = parsePolicy(value);
+                    case "--metagraph-rules" -> metagraphRulesFile = Path.of(value);
                     default -> throw new IllegalArgumentException("unknown option " + option);
                 }
             }
@@ -98,6 +119,12 @@ public class InferenceValidationMain {
         if (policy != null) {
             System.out.println("Policy filter: " + policy);
         }
+        List<Rule> metagraphRules = null;
+        if (metagraphRulesFile != null) {
+            metagraphRules = InferenceValidator.loadMetagraphRules(metagraphRulesFile);
+            System.out.println("Metagraph rules: " + metagraphRulesFile
+                    + " (" + metagraphRules.size() + " rules)");
+        }
 
         boolean allValid = true;
         int validated = 0;
@@ -107,7 +134,7 @@ public class InferenceValidationMain {
                 continue;
             }
             validated++;
-            allValid &= validateDirectory(validator, target, loaded);
+            allValid &= validateDirectory(validator, target, loaded, metagraphRules);
         }
         if (validated == 0) {
             System.err.println("Error: no history with merge policy " + policy
@@ -176,12 +203,17 @@ public class InferenceValidationMain {
      * verdicts, the merge classification and the summary. Under the RDFS/OWL
      * entailment regimes, also materializes the inferred knowledge of every
      * version as {@code <id>-<rdfs|owl>-infered.nq} next to its
-     * {@code <id>.nq} file.
+     * {@code <id>.nq} file. When a metagraph rule set is given, additionally
+     * re-derives the merge outcomes from the PROV-O description plus the
+     * verdicts, prints the agreement with the engine's classification, and
+     * writes the derived statements to
+     * {@code metagraph-<shacl|rdfs|owl>-infered.ttl}.
      *
      * @return {@code true} if every version of the directory is valid.
      */
     private static boolean validateDirectory(InferenceValidator validator, Path directory,
-                                             ProvOReader.ProvenanceGraph loaded) throws IOException {
+                                             ProvOReader.ProvenanceGraph loaded,
+                                             List<Rule> metagraphRules) throws IOException {
         InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
 
         System.out.println("\n=== " + directory + " (policy " + loaded.policy() + ") ===");
@@ -209,6 +241,24 @@ public class InferenceValidationMain {
                         + ", merge " + (m.mergeValid() ? "valid" : "invalid")
                         + " -> " + m.outcome());
             }
+        }
+        if (metagraphRules != null) {
+            InferenceValidator.MetagraphReport meta = validator.inferMetagraph(
+                    loaded.versions(), loaded.policy(), metagraphRules, report);
+            System.out.println("  Metagraph rules (over " + ProvOReader.PROVENANCE_FILE
+                    + " + mg:valid verdicts):");
+            for (InferenceValidator.MetagraphAssessment m : meta.merges()) {
+                System.out.println("    " + m.mergeId() + " -> "
+                        + (m.ruleOutcomes().isEmpty()
+                                ? "(no outcome derived)"
+                                : m.ruleOutcomes().stream().map(Enum::name)
+                                        .collect(Collectors.joining(", ")))
+                        + (m.agrees() ? " (agrees with the engine)"
+                                : " ** DISAGREES with the engine's " + m.engineOutcome() + " **"));
+            }
+            Path metagraphFile = validator.writeMetagraphFile(meta, directory);
+            System.out.println("    Wrote " + meta.derived().size()
+                    + " derived metagraph statements to " + metagraphFile);
         }
         if (validator.supportsInference()) {
             List<Path> inferredFiles = validator.writeInferredFiles(loaded.versions(), directory);

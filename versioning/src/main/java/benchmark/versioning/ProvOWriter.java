@@ -93,6 +93,15 @@ public final class ProvOWriter {
     }
 
     /**
+     * Builds the PROV-O description of the given versions as a Jena model —
+     * the same model that {@link #serialize} writes as Turtle. Used by
+     * {@link InferenceValidator#inferMetagraph} to reason over the metagraph.
+     */
+    public static Model model(Collection<Version> versions, MergePolicy policy) {
+        return buildModel(versions, policy);
+    }
+
+    /**
      * Builds the Jena model describing the version graph in PROV-O.
      */
     private static Model buildModel(Collection<Version> versions, MergePolicy policy) {
@@ -165,8 +174,17 @@ public final class ProvOWriter {
         return model.createTypedLiteral(instant.toString(), XSDDatatype.XSDdateTime);
     }
 
+    /**
+     * The IRI of the {@code prov:Entity} describing the version with the
+     * given id (the id is sanitized the same way {@link #serialize} mints
+     * the entity IRIs).
+     */
+    public static String entityIriOf(String versionId) {
+        return VERSION_NS + localName(versionId);
+    }
+
     private static String entityIri(Version v) {
-        return VERSION_NS + localName(v.getId());
+        return entityIriOf(v.getId());
     }
 
     private static String activityIri(Version v) {

@@ -10,7 +10,10 @@ This module (`benchmark.versioning`) implements the mathematical formalization o
   `S(v) = ⊕ S(u), u ∈ pre(v)`,
 - version and merge **validity** can be checked against a rule set (SHACL shapes, an RDFS or an
   OWL ontology) by the **Inference validation** program — see §7 and the companion research
-  document [Version-history-inference-validation.md](Version-history-inference-validation.md).
+  document [Version-history-inference-validation.md](Version-history-inference-validation.md),
+- the **metagraph** — the PROV-O description of the DAG itself — can be reasoned over with the
+  Jena rules of `rules/metagraph.rules`: node kinds, ancestry, policy-conditional dataset
+  containment, merge outcomes and temporal concurrency — see §8.
 
 **All quad/triple parsing and serialization is done with [Apache Jena](https://jena.apache.org/).**
 A quad is a Jena [`org.apache.jena.sparql.core.Quad`](https://jena.apache.org/documentation/javadoc/arq/org/apache/jena/sparql/core/Quad.html)
@@ -31,7 +34,7 @@ versioning/
 ├── Generation-formalisation.md                  # formal model of the version graph (§1–§4)
 ├── Version-history-inference-validation.md      # formal model of inference validation (§5–§12)
 ├── src/main/java/benchmark/versioning/          # the programs
-├── src/main/resources/rules/                    # example rule sets (SHACL, RDFS, OWL)
+├── src/main/resources/rules/                    # rule sets (SHACL, RDFS, OWL) + metagraph rules (§8)
 └── src/test/java/benchmark/versioning/          # the JUnit 5 tests
 ```
 
@@ -169,6 +172,8 @@ versions-export/
 │   ├── V0.nq  V1.nq  ...  V9.nq  M1.nq  M2.nq   # one N-Quads file per version
 │   ├── V0-rdfs-infered.nq  V0-owl-infered.nq ... # inferred knowledge per version (written by
 │   │                                             # the Inference validation program, §7)
+│   ├── metagraph-shacl-infered.ttl ...           # inferred metagraph (written by
+│   │                                             # --metagraph-rules, §7–§8)
 │   └── provenance.ttl                            # PROV-O description of the DAG (Turtle)
 ├── intersection/            (same layout)
 └── symmetric-difference/    (same layout)
@@ -187,7 +192,7 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | `VersionTimestampsTest` | The PROV-O lifecycle instants (§5.8): generated graphs obey the four generation/invalidation rules for many seeds, a hand-built diamond gets the expected instants, merging a version with its own child is rejected as unschedulable, and the consistency checker detects every kind of timestamp violation. |
 | `InferenceValidationTest` | Executable version of the worked micro-examples of [Version-history-inference-validation.md](Version-history-inference-validation.md) §12: each merge policy creating (`EMERGENT_VIOLATION`), propagating (`INHERITED_VIOLATION`) or repairing (`REPAIRED`) invalidity under SHACL (closed world) and RDFS/OWL (open world) rules, plus rule-language detection and the example rule files run against generated histories. |
 | `InferredKnowledgeTest` | The **inferred knowledge** of a version and its `<id>-<rdfs\|owl>-infered.nq` export files (§7): RDFS domain/range typing, OWL `owl:sameAs` from a functional property, how `∪` accumulates and `∩` loses the branches' inferences, that SHACL entails nothing, and that the inferred files parse as N-Quads without disturbing the PROV-O round-trip. |
-| `InferenceValidationMainTest` | The Inference validation **program**: the `--policy` parameter (selects the history by the merge policy read from `provenance.ttl`), the inferred-knowledge files it materializes (RDFS/OWL yes, SHACL no), and the exit codes (including `2` on usage errors and unmatched policies). |
+| `InferenceValidationMainTest` | The Inference validation **program**: the `--policy` parameter (selects the history by the merge policy read from `provenance.ttl`), the inferred-knowledge files it materializes (RDFS/OWL yes, SHACL no), the `--metagraph-rules` option (§8: the metagraph rules must re-derive the engine's merge outcomes, and the `metagraph-<lang>-infered.ttl` export), and the exit codes (including `2` on usage errors and unmatched policies). |
 
 ---
 
@@ -207,8 +212,8 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | `ProvOReader` | **Reads a version graph back from its PROV-O description** (`provenance.ttl`, parsed with Apache Jena) and the per-version N-Quads files. |
 | `Main` | Runnable demonstration program (generate → export → reload → summarize, optionally validate with `--rules`). |
 | `RuleLanguage` | The rule languages of the Inference validation (`SHACL`, `RDFS`, `OWL`), each tied to its world assumption (closed/open), with namespace-based auto-detection. |
-| `InferenceValidator` | The **Inference validation engine**: validates every version against a rule set, classifies every merge by the outcome taxonomy (`PRESERVED`, `EMERGENT_VIOLATION`, `REPAIRED`, `INHERITED_VIOLATION`) and, under RDFS/OWL, materializes the **inferred knowledge** of each version (`inferredKnowledge`, `writeInferredFiles`). |
-| `InferenceValidationMain` | Runnable **Inference validation** program: reloads exported histories (optionally selected with `--policy`), prints the per-version verdicts, the merge classification and the summary, and writes the `<id>-<rdfs\|owl>-infered.nq` files (§7). |
+| `InferenceValidator` | The **Inference validation engine**: validates every version against a rule set, classifies every merge by the outcome taxonomy (`PRESERVED`, `EMERGENT_VIOLATION`, `REPAIRED`, `INHERITED_VIOLATION`) and, under RDFS/OWL, materializes the **inferred knowledge** of each version (`inferredKnowledge`, `writeInferredFiles`). Also runs the **metagraph rules** over the PROV-O description enriched with the verdicts, cross-checking the rule-derived outcomes against its own classification (`loadMetagraphRules`, `inferMetagraph`, `writeMetagraphFile` — §8). |
+| `InferenceValidationMain` | Runnable **Inference validation** program: reloads exported histories (optionally selected with `--policy`), prints the per-version verdicts, the merge classification and the summary, writes the `<id>-<rdfs\|owl>-infered.nq` files (§7) and, with `--metagraph-rules`, the inferred metagraph `metagraph-<lang>-infered.ttl` (§8). |
 
 ### About quads and named graphs
 
@@ -528,6 +533,7 @@ mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationM
 | `--language <l>` | `shacl` \| `rdfs` \| `owl` \| `auto`. | `auto` (detected from the namespaces) |
 | `--dir <dir>` | Directory to validate: either it contains `provenance.ttl` + `<id>.nq` files, or each of its sub-directories does (the per-policy layout written by `Main`). | `versions-export` |
 | `--policy <p>` | The **merge policy to test**: `union` \| `intersection` \| `symmetric-difference` (case-insensitive, `-` or `_`). Only the histories whose global merge policy — read from `provenance.ttl`, the authoritative description — is `<p>` are validated; matching none is a usage error. | validate every history found |
+| `--metagraph-rules <f>` | A **metagraph rule set** in native Jena rule syntax (`rules/metagraph.rules`, §8): re-derives the merge outcomes from `provenance.ttl` + the per-version verdicts (asserted as `mg:valid` facts), reports the agreement with the engine's classification, and writes the derived statements to `metagraph-<shacl\|rdfs\|owl>-infered.ttl`. | (none) |
 
 Exit code: `0` — every version valid, `1` — at least one violation (CI-friendly), `2` — usage
 error.
@@ -575,6 +581,27 @@ produce dangling references that it flags), `rdfs-ontology.ttl` (deliberately al
 validates everything, exhibiting open-world blindness to loss) and `owl-ontology.ttl` (adds
 disjointness and a functional price, giving the open-world regime something to refute).
 
+A fourth file, `metagraph.rules`, is a rule set in the **native Jena rule syntax** (not RDF) that
+reasons over the PROV-O description of the version graph itself (§8). Pass it with
+`--metagraph-rules` to run it as part of the validation: the program asserts every version's
+verdict as an `mg:valid` fact on the provenance graph, re-derives the merge outcomes with the
+rules, reports whether they **agree with the engine's classification**, and writes the derived
+statements to `metagraph-<shacl|rdfs|owl>-infered.ttl` next to `provenance.ttl`:
+
+```bash
+mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationMain -Dexec.args="--rules src/main/resources/rules/shacl-shapes.ttl --dir versions-export --metagraph-rules src/main/resources/rules/metagraph.rules"
+```
+
+```
+  Merge classification:
+    M1 = UNION(V5, V6): invalid parent(s) V5, V6, merge invalid -> INHERITED_VIOLATION
+    ...
+  Metagraph rules (over provenance.ttl + mg:valid verdicts):
+    M1 -> INHERITED_VIOLATION (agrees with the engine)
+    M2 -> INHERITED_VIOLATION (agrees with the engine)
+    Wrote 470 derived metagraph statements to versions-export\union\metagraph-shacl-infered.ttl
+```
+
 Programmatic use (see `InferenceValidator`):
 
 ```java
@@ -589,11 +616,177 @@ if (validator.supportsInference()) {
     Set<Quad> inferred = validator.inferredKnowledge(version);          // in Vocabulary.GRAPH_INFERRED
     validator.writeInferredFiles(loaded.versions(), exportDirectory);   // <id>-<rdfs|owl>-infered.nq
 }
+
+// Metagraph rules (§8): re-derive the merge outcomes from the PROV-O description
+List<Rule> metagraphRules = InferenceValidator.loadMetagraphRules(
+        Path.of("src/main/resources/rules/metagraph.rules"));
+InferenceValidator.MetagraphReport meta = validator.inferMetagraph(
+        loaded.versions(), loaded.policy(), metagraphRules, report);
+meta.merges().forEach(m -> System.out.println(
+        m.mergeId() + " rules -> " + m.ruleOutcomes() + ", agrees: " + m.agrees()));
+validator.writeMetagraphFile(meta, exportDirectory);   // metagraph-<lang>-infered.ttl
 ```
 
 ---
 
-## 8. Complete example
+## 8. Metagraph reasoning (`rules/metagraph.rules`)
+
+The rule sets of §7 evaluate the **content** `S(v)` of each version. The fourth rule file of the
+module, `src/main/resources/rules/metagraph.rules`, evaluates the **metagraph** instead: the
+PROV-O description of the version graph itself (`provenance.ttl`, §5.8) — the version entities,
+their derivations, the transition/merge activities, the global policy agent and the lifecycle
+instants. It is written in the
+[Apache Jena rule language](https://jena.apache.org/documentation/inference/#rules)
+(`GenericRuleReasoner`), not in SHACL/RDFS/OWL: expressing "*if* the merge policy is inflationary
+*then* every parent's dataset is contained in the merge's" needs policy-conditional rules,
+negation-as-failure and `xsd:dateTime` comparison, none of which the §7 languages offer. All
+derived terms live in the dedicated namespace `mg:` = `http://example.org/versioning/meta#`, and
+every rule in the file is commented with the section of
+[Version-history-inference-validation.md](Version-history-inference-validation.md) or of §5.8
+that justifies it.
+
+Everything below can also be run in **one command**: the Inference validation program's
+`--metagraph-rules` option (§7) validates a history, asserts the verdicts and runs these rules
+in a single pass, cross-checking the rule-derived outcomes against the engine's classification.
+§8.1–§8.4 show the same pipeline wired by hand with the Jena API.
+
+### 8.1 Load and run
+
+Generate an export first (`mvn compile exec:java`, §2.1 step 1), then bind the rules to the
+provenance graph with Jena:
+
+```java
+import org.apache.jena.rdf.model.*;
+import org.apache.jena.reasoner.rulesys.*;
+import org.apache.jena.riot.RDFDataMgr;
+import java.util.List;
+
+List<Rule> rules = Rule.rulesFromURL("file:src/main/resources/rules/metagraph.rules");
+GenericRuleReasoner reasoner = new GenericRuleReasoner(rules);
+reasoner.setMode(GenericRuleReasoner.FORWARD);
+
+Model provenance = RDFDataMgr.loadModel("versions-export/union/provenance.ttl");
+InfModel meta = ModelFactory.createInfModel(reasoner, provenance);
+```
+
+`meta` now contains the asserted PROV-O statements plus everything the rules derive; read it with
+the Model API (`meta.listStatements(...)`, `meta.contains(...)`) or query it with SPARQL (§8.4).
+
+### 8.2 What is derived from `provenance.ttl` alone
+
+No input beyond the PROV-O export is needed for the following (examples from the default `union`
+history, seed 42; `ver:`, `act:`, `agt:` as in §5.8, `mg:` as above):
+
+| Question answered | Derived vocabulary | Example |
+|---|---|---|
+| What kind of node is this? | `mg:RootVersion`, `mg:TransitionVersion`, `mg:MergeVersion`, `mg:OctopusMerge`, `mg:ForkVersion`, `mg:FinalVersion`, `mg:SupersededVersion` | `ver:V0 a mg:RootVersion, mg:ForkVersion`; `ver:M1 a mg:MergeVersion, mg:FinalVersion` |
+| Under which policy was it merged? | `mg:mergedUnder`; `mg:UnionMerge`, `mg:IntersectionMerge`, `mg:SymmetricDifferenceMerge` | `ver:M1 mg:mergedUnder agt:policy-UNION`; `ver:M1 a mg:UnionMerge` |
+| History reachability | `mg:hasAncestor`, `mg:hasDescendant`, `mg:hasAncestorOrSelf`, `mg:precedes` | `ver:M2 mg:hasAncestor ver:V0` |
+| Where did branches diverge? | `mg:siblingOf`, `mg:mergeBaseCandidateOf` | `ver:V1 mg:siblingOf ver:V2`; `ver:V0 mg:mergeBaseCandidateOf ver:M1` |
+| Who replaced whom, and when? | `mg:supersededBy`, `mg:invalidatedByActivity`, `mg:supersededAtTime` | `ver:V6 mg:supersededBy ver:M1, ver:M2` |
+| What does `⊕` guarantee about `S(v)`? | `mg:datasetSubsetOf`, `mg:datasetEquals`, `mg:entailmentSubsetOf`, `mg:quadsCoveredByParents` | under `∪`: `ver:V6 mg:datasetSubsetOf ver:M1` (the direction flips under `∩`) |
+| What must be re-checked after each merge? | `mg:mustRecheck`, `mg:exemptFromRecheck` (the §9 cost model of the companion document) | `ver:M1 mg:mustRecheck mg:UpperBoundConstraint, mg:OwaConsistency` |
+| Which versions coexisted? | `mg:generatedBefore`, `mg:concurrentWith` | `ver:V5 mg:concurrentWith ver:V7`; `ver:M1 mg:concurrentWith ver:M2` |
+| Is the lifecycle well formed? | `mg:violatesGenerationOrder`, `mg:violatesInvalidationRule`, `mg:violatesForkAlignment`, `mg:violatesLifecycle` | none on a generated export (the four §5.8 rules hold) |
+| PROV completion | `prov:wasInfluencedBy`, `prov:wasInformedBy`, `prov:wasAttributedTo`, `prov:wasRevisionOf`, `prov:alternateOf` | `ver:M1 prov:wasAttributedTo agt:policy-UNION` |
+
+The three policy agents also carry their algebra as axioms — `mg:commutative`, `mg:associative`,
+`mg:idempotent` (`false` for `Δ`), `mg:inflationary` (`∪`), `mg:deflationary` (`∩`),
+`mg:paritySensitive` (`Δ`) — and the ⊕-safety matrix of the companion document §7.4 as
+`mg:safeFor` / `mg:endangers` statements over the five constraint families
+(`mg:IntrinsicConstraint`, `mg:DeterministicWitnessConstraint`, `mg:WitnessConstraint`,
+`mg:UpperBoundConstraint`, `mg:OwaConsistency`).
+
+### 8.3 Adding validity facts: the merge outcome taxonomy
+
+The rules classify merges by the outcome taxonomy of §7 (`PRESERVED`, `EMERGENT_VIOLATION`,
+`REPAIRED`, `INHERITED_VIOLATION`) when the per-version verdicts are asserted as
+`mg:valid true|false` facts **before** the inference model is created — for example straight
+from the Inference validation engine (continuing the §8.1 snippet):
+
+```java
+ProvOReader.ProvenanceGraph loaded = ProvOReader.read(Path.of("versions-export/union"));
+InferenceValidator validator =
+        InferenceValidator.fromFile(Path.of("src/main/resources/rules/shacl-shapes.ttl"));
+InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
+
+Property valid = provenance.createProperty("http://example.org/versioning/meta#valid");
+for (InferenceValidator.VersionValidity verdict : report.versions()) {
+    provenance.add(provenance.createResource(ProvOWriter.VERSION_NS + verdict.versionId()),
+            valid, provenance.createTypedLiteral(verdict.valid()));
+}
+InfModel meta = ModelFactory.createInfModel(reasoner, provenance);
+```
+
+(The generated ids `V0…Vn`, `M1…Mm` are IRI-safe as-is; ids with other characters must be
+sanitized the way `ProvOWriter` mints the entity IRIs.) With `V6` invalid and every other
+version valid, the rules derive:
+
+```turtle
+ver:M1  mg:hasInvalidParent  ver:V6 .
+ver:M1  mg:outcome           mg:Repaired .            # valid merge despite an invalid branch
+ver:M2  mg:outcome           mg:InheritedViolation .  # invalid merge, propagated from V6
+ver:V6  mg:responsibleFor    ver:M2 .                 # blame the branch, not the policy
+```
+
+An all-valid history yields `mg:outcome mg:Preserved` on every merge; an invalid merge whose
+parents are all valid yields `mg:outcome mg:EmergentViolation` and blames the policy agent
+(`agt:policy-UNION mg:responsibleFor ver:M…`) — the provenance reading of §7's outcome table.
+
+Under the RDFS/OWL regimes you can instead (or additionally) assert `mg:owaConsistent` facts;
+the rules extend them along the containment lattice of §8.2: consistency flows **down** to
+subsets (a `∩`-merge with one consistent parent is consistent — the ∩-safety theorem of the
+companion document §7.2) and inconsistency flows **up** to supersets. Asserting only
+`ver:V6 mg:owaConsistent false` in the `union` history derives
+`ver:M1 mg:owaConsistent false` and `ver:M2 mg:owaConsistent false` — the inherited violations
+are predicted from the metagraph alone, before any reasoner touches the version data.
+
+This wiring is exactly what `InferenceValidator.inferMetagraph` implements (it additionally
+asserts the merges' `mg:hasInvalidParent` facts as base data, which keeps the closed-world
+outcome rules stable regardless of rule-firing order); the `--metagraph-rules` option of the
+program runs it and reports the agreement per merge.
+
+### 8.4 Querying the inferred metagraph with SPARQL
+
+Any ARQ query runs against the `InfModel`. For example, the incremental re-validation plan
+(which constraint families each merge endangers, §8.2):
+
+```java
+import org.apache.jena.query.*;
+
+String q = """
+        PREFIX mg: <http://example.org/versioning/meta#>
+        SELECT ?merge ?family
+        WHERE { ?merge mg:mustRecheck ?family }
+        ORDER BY ?merge ?family
+        """;
+try (QueryExecution qe = QueryExecutionFactory.create(q, meta)) {
+    ResultSetFormatter.out(qe.execSelect());
+}
+```
+
+On the `union` history this lists `ver:M1` and `ver:M2` against `mg:UpperBoundConstraint` and
+`mg:OwaConsistency` — exactly the "re-check the conflict detectors after a `∪`-merge" row of the
+companion document §9.
+
+### 8.5 Caveats
+
+- **Booleans are matched as nodes, not values**: assert `mg:valid` / `mg:owaConsistent` /
+  `mg:intrinsicallyValid` as `xsd:boolean` literals with lexical form `true` / `false`
+  (`Model.createTypedLiteral(boolean)` does exactly this).
+- **`mg:Preserved` / `mg:EmergentViolation` are closed-world conclusions**: those two rules read
+  the absence of an `mg:hasInvalidParent` fact as "all parents valid", so assert `mg:valid` for
+  *every* parent of every merge (the §8.3 loop does). `mg:Repaired` /
+  `mg:InheritedViolation` are monotone and always sound.
+- All other negation-as-failure in the file (`noValue`) only tests properties that
+  `ProvOWriter` asserts and no rule derives (`prov:wasDerivedFrom`, `prov:wasAssociatedWith`,
+  `prov:invalidatedAtTime`), so pure forward chaining stays sound.
+- The rules assume `ProvOWriter`'s conventions: one global policy agent, and only merge
+  activities are `prov:wasAssociatedWith` an agent.
+
+---
+
+## 9. Complete example
 
 ```java
 import benchmark.versioning.*;
