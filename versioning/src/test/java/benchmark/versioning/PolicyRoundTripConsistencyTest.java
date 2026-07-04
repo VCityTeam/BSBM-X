@@ -64,10 +64,13 @@ class PolicyRoundTripConsistencyTest {
                     () -> "prov:generatedAtTime of " + reloaded.getId() + " changed through the round-trip");
             assertEquals(original.getInvalidatedAtTime(), reloaded.getInvalidatedAtTime(),
                     () -> "prov:invalidatedAtTime of " + reloaded.getId() + " changed through the round-trip");
+            assertEquals(original.getMergePolicy(), reloaded.getMergePolicy(),
+                    () -> "merge policy of " + reloaded.getId() + " changed through the round-trip");
         }
 
-        // 4b. Consistency verification of the reloaded graph.
-        assertTrue(VersionConsistencyChecker.isConsistent(loaded.versions(), loaded.policy()),
+        // 4b. Consistency verification of the reloaded graph: each merge is
+        //     checked against its own policy, restored from provenance.ttl.
+        assertTrue(VersionConsistencyChecker.isConsistent(loaded.versions()),
                 () -> "reloaded graph must be consistent under " + policy);
     }
 }

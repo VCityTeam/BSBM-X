@@ -53,13 +53,20 @@ import org.apache.jena.sparql.core.Quad;
  * versions following a fork are generated at the same instant (which is the
  * fork's invalidation instant) and the final versions stay valid.
  * <p>
+ * Merges apply either one global policy ({@link #generate}) or a policy
+ * drawn at random per merge ({@link #generateRandomPolicies}); each merge
+ * records its policy ({@link Version#getMergePolicy()}), which the PROV-O
+ * export preserves.
+ * <p>
  * The generation is deterministic for a given seed (only the wall-clock
  * anchor of the timestamps changes between runs), and the DAG structure
- * does not depend on the merge policy: two independent random streams are
- * used, one for the structure (fork/branch/merge choices) and one for the
- * data (deletion picks), and the schedulability check is purely structural.
- * The same parameters replayed under different policies therefore produce
- * the same DAG — only the datasets downstream of the merges differ.
+ * does not depend on the merge policies: three independent random streams
+ * are used — one for the structure (fork/branch/merge choices), one for the
+ * data (deletion picks) and one for the per-merge policy draws of
+ * {@link #generateRandomPolicies} — and the schedulability check is purely
+ * structural. The same parameters replayed under a different fixed policy,
+ * or under random per-merge policies, therefore produce the same DAG — only
+ * the datasets downstream of the merges differ.
  */
 public final class VersionGraphGenerator {
 
@@ -107,7 +114,11 @@ public final class VersionGraphGenerator {
     private final Random structureRng;
     /** Draws for the data: which quads each transition deletes. */
     private final Random dataRng;
+    /** Draws for the per-merge policies of {@link #generateRandomPolicies}. */
+    private final Random policyRng;
     private final Parameters params;
+    /** Policy applied to every merge; {@code null} = random per merge. */
+    private final MergePolicy fixedPolicy;
     private final VersionGraph graph;
     /** Head version of each branch; index = branch number. */
     private final List<Version> heads = new ArrayList<>();
@@ -115,19 +126,39 @@ public final class VersionGraphGenerator {
     private int nextVersionNo = 1;
     private int nextMergeNo = 1;
 
-    private VersionGraphGenerator(Parameters params, MergePolicy policy) {
+    private VersionGraphGenerator(Parameters params, MergePolicy fixedPolicy) {
         this.params = params;
-        this.graph = new VersionGraph(policy);
+        this.fixedPolicy = fixedPolicy;
+        this.graph = new VersionGraph(fixedPolicy);
         this.structureRng = new Random(params.seed());
         this.dataRng = new Random(params.seed() + 1);
+        this.policyRng = new Random(params.seed() + 2);
     }
 
     /**
      * Generates a version graph with the given parameters under the given
-     * global merge policy.
+     * global merge policy, applied to every merge.
      */
     public static VersionGraph generate(Parameters params, MergePolicy policy) {
+        if (policy == null) {
+            throw new IllegalArgumentException("policy must not be null:"
+                    + " use generateRandomPolicies for random per-merge policies");
+        }
         return new VersionGraphGenerator(params, policy).build();
+    }
+
+    /**
+     * Generates a version graph with the given parameters where <b>each
+     * merge draws its own policy at random</b>, uniformly over
+     * {@link MergePolicy}, from a dedicated random stream — deterministic
+     * for a given seed. The DAG structure and the transition data are
+     * identical to the fixed-policy graphs of the same seed; only the
+     * datasets downstream of the merges differ. Each merge records its
+     * policy ({@link Version#getMergePolicy()}), which the PROV-O export
+     * preserves, so the reloaded history stays verifiable merge by merge.
+     */
+    public static VersionGraph generateRandomPolicies(Parameters params) {
+        return new VersionGraphGenerator(params, null).build();
     }
 
     private VersionGraph build() {
@@ -231,13 +262,27 @@ public final class VersionGraphGenerator {
                     parents.add(heads.get(branches.get(position)));
                 }
                 if (VersionTimestamps.canAddMerge(graph.getVersions(), parents)) {
-                    Version merge = graph.createMerge("M" + nextMergeNo++, parents);
+                    Version merge = graph.createMerge("M" + nextMergeNo++, parents, nextPolicy());
                     heads.set(branches.get(combination[0]), merge);
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /**
+     * The policy of the next merge: the fixed global policy, or a uniform
+     * draw from the dedicated policy stream in random mode — one draw per
+     * merge created, so the draws stay aligned with the merge numbering
+     * whatever combinations the schedulability check rejected.
+     */
+    private MergePolicy nextPolicy() {
+        if (fixedPolicy != null) {
+            return fixedPolicy;
+        }
+        MergePolicy[] policies = MergePolicy.values();
+        return policies[policyRng.nextInt(policies.length)];
     }
 
     /**

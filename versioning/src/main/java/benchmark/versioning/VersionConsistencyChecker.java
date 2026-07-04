@@ -13,23 +13,37 @@ import java.util.stream.Collectors;
 import org.apache.jena.sparql.core.Quad;
 
 public class VersionConsistencyChecker {
+
     /**
      * Checks that every merge node (|pre(v)| >= 2) of the given versions has
-     * a state strictly equal to the global policy operator applied to the
-     * RDF datasets of its parents, and that the PROV-O lifecycle instants
-     * (when present) obey the generation/invalidation rules
-     * (see {@link #hasConsistentTimestamps}).
+     * a state strictly equal to <b>its own merge policy</b> operator
+     * ({@link Version#getMergePolicy()}) applied to the RDF datasets of its
+     * parents, and that the PROV-O lifecycle instants (when present) obey the
+     * generation/invalidation rules (see {@link #hasConsistentTimestamps}).
+     * <p>
+     * The policy of each merge comes from the version itself — for a history
+     * reloaded with {@link ProvOReader}, from the {@code provenance.ttl}
+     * description — so histories mixing several per-merge policies are
+     * checked merge by merge. A merge version carrying no policy cannot be
+     * verified and is reported as inconsistent.
      */
-    public static boolean isConsistent(Collection<Version> versions, MergePolicy policy) {
+    public static boolean isConsistent(Collection<Version> versions) {
         for (Version v : versions) {
             List<Version> parents = v.getParents();
             if (parents.size() >= 2) {
+                MergePolicy policy = v.getMergePolicy();
+                if (policy == null) {
+                    System.out.println("[DEBUG_LOG] Merge version " + v.getId()
+                            + " carries no merge policy: cannot verify its state");
+                    return false;
+                }
                 List<Set<Quad>> parentsData = parents.stream()
                         .map(Version::getData)
                         .collect(Collectors.toList());
                 Set<Quad> expectedData = policy.apply(parentsData);
                 if (!v.getData().equals(expectedData)) {
-                    System.out.println("[DEBUG_LOG] Consistency violation at version: " + v.getId());
+                    System.out.println("[DEBUG_LOG] Consistency violation at version: " + v.getId()
+                            + " (policy " + policy + ")");
                     System.out.println("[DEBUG_LOG] Expected: " + expectedData);
                     System.out.println("[DEBUG_LOG] Actual:   " + v.getData());
                     return false;

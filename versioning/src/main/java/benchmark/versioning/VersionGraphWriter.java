@@ -81,8 +81,11 @@ public final class VersionGraphWriter {
         StringBuilder sb = new StringBuilder();
         sb.append("# ===== RDF version export (N-Quads) =====\n");
         sb.append("# version: ").append(v.getId()).append('\n');
-        sb.append("# global merge policy: ").append(policy).append('\n');
+        sb.append("# global merge policy: ").append(policy == null ? "(per merge)" : policy).append('\n');
         sb.append("# kind: ").append(kindOf(v)).append('\n');
+        if (v.getMergePolicy() != null) {
+            sb.append("# merge policy: ").append(v.getMergePolicy()).append('\n');
+        }
         sb.append("# parents: ").append(parentsOf(v)).append('\n');
         sb.append("# quads: ").append(v.getData().size()).append('\n');
         for (String line : nquadLines(v.getData())) {

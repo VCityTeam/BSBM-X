@@ -5,7 +5,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -16,6 +18,7 @@ import java.util.Set;
 import org.apache.jena.datatypes.xsd.XSDDateTime;
 import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.Property;
+import org.apache.jena.rdf.model.RDFNode;
 import org.apache.jena.rdf.model.ResIterator;
 import org.apache.jena.rdf.model.Resource;
 import org.apache.jena.rdf.model.Statement;
@@ -44,8 +47,11 @@ import org.apache.jena.vocabulary.RDFS;
  *       {@code prov:generatedAtTime} and {@code prov:invalidatedAtTime}
  *       statements, when present (final versions, still valid, have no
  *       invalidation instant);</li>
- *   <li>the global merge policy is the {@code prov:SoftwareAgent} in the
- *       {@link ProvOWriter#AGENT_NS} namespace.</li>
+ *   <li>the merge policy of every merge node is the
+ *       {@code agt:policy-<POLICY>} {@code prov:SoftwareAgent} its merge
+ *       activity is {@code prov:wasAssociatedWith}; the global policy of the
+ *       reloaded graph is the single policy shared by all its merges, or
+ *       {@code null} when they mix several per-merge policies.</li>
  * </ul>
  * The RDF dataset S(v) of each version is loaded (with Jena) from its
  * dedicated N-Quads export file ({@code <id>.nq}, written by
@@ -65,8 +71,10 @@ public final class ProvOReader {
 
     /**
      * A version graph reconstructed from its PROV-O description: the
-     * versions (with their datasets and parents) and the global merge
-     * policy declared by the policy agent.
+     * versions (with their datasets, parents, per-merge policies and
+     * lifecycle instants) and the global merge policy — the single policy
+     * shared by every merge, or {@code null} when the history mixes several
+     * per-merge policies (each {@link Version} then carries its own).
      */
     public record ProvenanceGraph(List<Version> versions, MergePolicy policy) { }
 
@@ -93,8 +101,9 @@ public final class ProvOReader {
             throw new IOException("Missing PROV-O file: " + provFile);
         }
         Model model = RDFDataMgr.loadModel(provFile.toUri().toString());
-        MergePolicy policy = readPolicy(model, provFile);
         Map<Resource, List<Resource>> parentsOf = readDerivations(model, provFile);
+        Map<Resource, MergePolicy> mergePolicies = readMergePolicies(model, parentsOf, provFile);
+        MergePolicy policy = globalPolicyOf(model, mergePolicies.values(), provFile);
 
         // Build the versions parents-first over the DAG.
         Map<Resource, Version> built = new HashMap<>();
@@ -113,6 +122,7 @@ public final class ProvOReader {
                 String id = idOf(entity);
                 Set<Quad> data = readDataset(versionFilesDir.resolve(VersionGraphWriter.fileNameOf(id)));
                 Version v = new Version(id, data, parents.stream().map(built::get).toList(),
+                        mergePolicies.get(entity),
                         readInstant(entity, "generatedAtTime", provFile),
                         readInstant(entity, "invalidatedAtTime", provFile));
                 built.put(entity, v);
@@ -127,25 +137,116 @@ public final class ProvOReader {
     }
 
     /**
-     * The global merge policy is the {@code prov:SoftwareAgent} named
-     * {@code agt:policy-<POLICY>} by {@link ProvOWriter}.
+     * The policy of each merge entity (two parents or more): the
+     * {@code agt:policy-<POLICY>} agent its generating activity is
+     * {@code prov:wasAssociatedWith} ({@link ProvOWriter}'s convention). A
+     * merge whose activity carries no association falls back to the single
+     * policy agent declared in the file (as written before the policies were
+     * recorded per merge); with several agents declared the association is
+     * required, otherwise the merge would be ambiguous.
      */
-    private static MergePolicy readPolicy(Model model, Path provFile) throws IOException {
-        Resource agentType = model.createResource(PROV_NS + "SoftwareAgent");
-        String prefix = ProvOWriter.AGENT_NS + "policy-";
-        ResIterator it = model.listSubjectsWithProperty(RDF.type, agentType);
-        while (it.hasNext()) {
-            Resource agent = it.next();
-            if (agent.isURIResource() && agent.getURI().startsWith(prefix)) {
-                String name = agent.getURI().substring(prefix.length());
-                try {
-                    return MergePolicy.valueOf(name);
-                } catch (IllegalArgumentException e) {
-                    throw new IOException("Unknown merge policy '" + name + "' in " + provFile, e);
+    private static Map<Resource, MergePolicy> readMergePolicies(Model model,
+            Map<Resource, List<Resource>> parentsOf, Path provFile) throws IOException {
+        List<MergePolicy> declared = declaredPolicies(model, provFile);
+        Property wasGeneratedBy = model.createProperty(PROV_NS, "wasGeneratedBy");
+        Property wasAssociatedWith = model.createProperty(PROV_NS, "wasAssociatedWith");
+
+        Map<Resource, MergePolicy> policies = new HashMap<>();
+        for (Map.Entry<Resource, List<Resource>> entry : parentsOf.entrySet()) {
+            if (entry.getValue().size() < 2) {
+                continue;
+            }
+            Resource entity = entry.getKey();
+            MergePolicy policy = associatedPolicy(entity, wasGeneratedBy, wasAssociatedWith, provFile);
+            if (policy == null && declared.size() == 1) {
+                policy = declared.get(0);
+            }
+            if (policy == null) {
+                throw new IOException("No merge-policy agent associated with the merge "
+                        + entity.getURI() + " in " + provFile);
+            }
+            policies.put(entity, policy);
+        }
+        return policies;
+    }
+
+    /**
+     * The policy agent associated with the activity that generated the given
+     * entity, or {@code null} when there is none.
+     */
+    private static MergePolicy associatedPolicy(Resource entity, Property wasGeneratedBy,
+            Property wasAssociatedWith, Path provFile) throws IOException {
+        StmtIterator activities = entity.listProperties(wasGeneratedBy);
+        while (activities.hasNext()) {
+            RDFNode activity = activities.next().getObject();
+            if (!activity.isResource()) {
+                continue;
+            }
+            StmtIterator agents = activity.asResource().listProperties(wasAssociatedWith);
+            while (agents.hasNext()) {
+                MergePolicy policy = policyOf(agents.next().getObject(), provFile);
+                if (policy != null) {
+                    return policy;
                 }
             }
         }
-        throw new IOException("No global merge policy agent found in " + provFile);
+        return null;
+    }
+
+    /**
+     * All the {@code agt:policy-<POLICY>} software agents declared in the
+     * file, without duplicates.
+     */
+    private static List<MergePolicy> declaredPolicies(Model model, Path provFile) throws IOException {
+        Resource agentType = model.createResource(PROV_NS + "SoftwareAgent");
+        List<MergePolicy> declared = new ArrayList<>();
+        ResIterator it = model.listSubjectsWithProperty(RDF.type, agentType);
+        while (it.hasNext()) {
+            MergePolicy policy = policyOf(it.next(), provFile);
+            if (policy != null && !declared.contains(policy)) {
+                declared.add(policy);
+            }
+        }
+        return declared;
+    }
+
+    /**
+     * The policy named by an {@code agt:policy-<POLICY>} node, {@code null}
+     * for any other node.
+     */
+    private static MergePolicy policyOf(RDFNode agent, Path provFile) throws IOException {
+        String prefix = ProvOWriter.AGENT_NS + "policy-";
+        if (!agent.isURIResource() || !agent.asResource().getURI().startsWith(prefix)) {
+            return null;
+        }
+        String name = agent.asResource().getURI().substring(prefix.length());
+        try {
+            return MergePolicy.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Unknown merge policy '" + name + "' in " + provFile, e);
+        }
+    }
+
+    /**
+     * The global policy of the history: the single policy shared by all its
+     * merges — for a merge-free history, the single declared policy agent —
+     * or {@code null} when the merges mix several per-merge policies (or
+     * nothing is declared at all).
+     */
+    private static MergePolicy globalPolicyOf(Model model, Collection<MergePolicy> mergePolicies,
+            Path provFile) throws IOException {
+        Set<MergePolicy> distinct = EnumSet.noneOf(MergePolicy.class);
+        distinct.addAll(mergePolicies);
+        if (distinct.size() == 1) {
+            return distinct.iterator().next();
+        }
+        if (distinct.isEmpty()) {
+            List<MergePolicy> declared = declaredPolicies(model, provFile);
+            if (declared.size() == 1) {
+                return declared.get(0);
+            }
+        }
+        return null;
     }
 
     /**

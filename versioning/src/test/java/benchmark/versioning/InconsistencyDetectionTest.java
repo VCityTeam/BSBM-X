@@ -52,7 +52,7 @@ class InconsistencyDetectionTest {
         ProvOWriter.writeToFile(versions, policy, dir.resolve(ProvOReader.PROVENANCE_FILE));
 
         ProvOReader.ProvenanceGraph loaded = ProvOReader.read(dir);
-        assertFalse(VersionConsistencyChecker.isConsistent(loaded.versions(), loaded.policy()),
+        assertFalse(VersionConsistencyChecker.isConsistent(loaded.versions()),
                 "the tampered merge must be detected as inconsistent through the PROV-O round-trip");
     }
 }

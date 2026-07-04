@@ -7,16 +7,20 @@ import java.util.stream.Collectors;
 
 /**
  * Command-line program that generates an RDF version graph from a handful of
- * parameters and exports it under each global merge policy.
+ * parameters and exports it once per merge-policy mode.
  * <p>
- * For every policy ({@code UNION}, {@code INTERSECTION},
- * {@code SYMMETRIC_DIFFERENCE}) it: generates the graph (the same seed
- * produces the same DAG for every policy — only the datasets downstream of
- * the merges differ), exports each version to its own N-Quads file plus the
- * PROV-O description of the version graph ({@code provenance.ttl}), then
- * reloads the whole graph from that provenance (parsed with Apache Jena) and
- * prints a summary. The consistency assertions are exercised by the tests in
- * {@code src/test/java} (see {@code PolicyRoundTripConsistencyTest} and
+ * For every fixed global policy ({@code UNION}, {@code INTERSECTION},
+ * {@code SYMMETRIC_DIFFERENCE}) — plus a fourth run where <b>each merge
+ * draws its own policy at random</b>
+ * ({@link VersionGraphGenerator#generateRandomPolicies}, exported to
+ * {@code random/}) — it: generates the graph (the same seed produces the
+ * same DAG in every mode — only the datasets downstream of the merges
+ * differ), exports each version to its own N-Quads file plus the PROV-O
+ * description of the version graph ({@code provenance.ttl}, which records
+ * the policy of every merge), then reloads the whole graph from that
+ * provenance (parsed with Apache Jena) and prints a summary. The consistency
+ * assertions are exercised by the tests in {@code src/test/java} (see
+ * {@code PolicyRoundTripConsistencyTest} and
  * {@code InconsistencyDetectionTest}).
  * <p>
  * When a rule set is given ({@code --rules}), each reloaded history is
@@ -76,25 +80,29 @@ public class Main {
 
         // The structure of the generated DAG only depends on the parameters
         // (same seed, same DAG): only the datasets downstream of the merges
-        // differ between policies.
+        // differ between the policy modes.
         for (MergePolicy policy : MergePolicy.values()) {
             String subDir = policy.name().toLowerCase().replace('_', '-');
-            generateAndExport(policy, parameters, exportDir.resolve(subDir), validator);
+            exportAndReload(policy + " policy",
+                    VersionGraphGenerator.generate(parameters, policy),
+                    exportDir.resolve(subDir), validator);
         }
+        // Fourth mode: every merge draws its own policy at random (recorded
+        // per merge in provenance.ttl).
+        exportAndReload("random per-merge policies",
+                VersionGraphGenerator.generateRandomPolicies(parameters),
+                exportDir.resolve("random"), validator);
     }
 
     /**
-     * Generates the graph under the given policy, exports it (one N-Quads
-     * file per version plus {@code provenance.ttl}), reloads it from the
-     * generated PROV-O description (Apache Jena), prints a summary and, when
-     * a validator is given, the Inference validation summary of the reloaded
-     * history.
+     * Exports the given graph (one N-Quads file per version plus
+     * {@code provenance.ttl}), reloads it from the generated PROV-O
+     * description (Apache Jena), prints a summary and, when a validator is
+     * given, the Inference validation summary of the reloaded history.
      */
-    private static void generateAndExport(MergePolicy policy, VersionGraphGenerator.Parameters parameters,
-                                          Path directory, InferenceValidator validator) throws IOException {
-        System.out.println("\n--- " + policy + " policy ---");
-
-        VersionGraph graph = VersionGraphGenerator.generate(parameters, policy);
+    private static void exportAndReload(String label, VersionGraph graph,
+                                        Path directory, InferenceValidator validator) throws IOException {
+        System.out.println("\n--- " + label + " ---");
 
         List<Path> files = VersionGraphWriter.writeEachVersionToDirectory(graph, directory);
         ProvOWriter.writeToFile(graph, directory.resolve(ProvOReader.PROVENANCE_FILE));
@@ -111,7 +119,7 @@ public class Main {
         }
         System.out.println("Reloaded from " + ProvOReader.PROVENANCE_FILE + ": " + summarize(ordered));
         System.out.println("Reloaded graph is consistent: "
-                + VersionConsistencyChecker.isConsistent(loaded.versions(), loaded.policy()));
+                + VersionConsistencyChecker.isConsistent(loaded.versions()));
         if (validator != null) {
             InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
             System.out.println("Inference validation (" + validator.getLanguage() + "): "

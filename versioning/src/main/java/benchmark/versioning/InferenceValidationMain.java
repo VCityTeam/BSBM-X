@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -35,7 +37,9 @@ import org.apache.jena.reasoner.rulesys.Rule;
  * version as {@code <id>-<rdfs|owl>-infered.nq}
  * (see {@link InferenceValidator#writeInferredFiles}). The optional
  * {@code --policy} parameter restricts the run to the histories whose global
- * merge policy — read from {@code provenance.ttl} — is the given one.
+ * merge policy — read from {@code provenance.ttl} — is the given one; a
+ * history mixing per-merge policies (e.g. the {@code random/} export of
+ * {@link Main}) has no global policy and matches no filter.
  * <p>
  * With {@code --metagraph-rules <file>} the program additionally runs a
  * <b>metagraph</b> rule set (native Apache Jena rule syntax, e.g.
@@ -58,7 +62,8 @@ public class InferenceValidationMain {
                                  (the per-policy layout written by benchmark.versioning.Main)
               --policy <p>       union | intersection | symmetric-difference: only validate the
                                  histories whose global merge policy (read from provenance.ttl)
-                                 is <p> (default: validate every history found)
+                                 is <p> (default: validate every history found, including the
+                                 ones mixing per-merge policies, which match no filter)
               --metagraph-rules <f>  metagraph rule set in native Jena rule syntax (e.g.
                                  src/main/resources/rules/metagraph.rules): re-derives the merge
                                  outcomes from provenance.ttl + the per-version verdicts (asserted
@@ -216,7 +221,9 @@ public class InferenceValidationMain {
                                              List<Rule> metagraphRules) throws IOException {
         InferenceValidator.HistoryReport report = validator.validateHistory(loaded.versions());
 
-        System.out.println("\n=== " + directory + " (policy " + loaded.policy() + ") ===");
+        System.out.println("\n=== " + directory + " ("
+                + (loaded.policy() == null ? "mixed per-merge policies" : "policy " + loaded.policy())
+                + ") ===");
         List<Version> ordered = VersionGraphWriter.topologicalOrder(loaded.versions());
         for (Version v : ordered) {
             InferenceValidator.VersionValidity validity = report.versions().stream()
@@ -231,9 +238,13 @@ public class InferenceValidationMain {
         }
 
         if (!report.merges().isEmpty()) {
+            Map<String, Version> byId = new HashMap<>();
+            loaded.versions().forEach(x -> byId.put(x.getId(), x));
             System.out.println("  Merge classification:");
             for (InferenceValidator.MergeAssessment m : report.merges()) {
-                System.out.println("    " + m.mergeId() + " = " + loaded.policy()
+                MergePolicy mergePolicy = byId.get(m.mergeId()).getMergePolicy();
+                System.out.println("    " + m.mergeId() + " = "
+                        + (mergePolicy != null ? mergePolicy : loaded.policy())
                         + "(" + String.join(", ", m.parentIds()) + "): "
                         + (m.invalidParentIds().isEmpty()
                                 ? "parents valid"

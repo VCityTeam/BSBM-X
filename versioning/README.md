@@ -5,7 +5,9 @@ This module (`benchmark.versioning`) implements the mathematical formalization o
 
 - every version holds an **RDF dataset** made of **quads** (subject, predicate, object, graph name),
 - the graph supports **multiple branches** and **n-ary merges** ("octopus" merges),
-- all merges are governed by a single **global merge policy** `⊕ ∈ {∪, ∩, Δ}`,
+- every merge applies a policy `⊕ ∈ {∪, ∩, Δ}` — either one **global merge policy** for the
+  whole graph, or a **policy drawn at random per merge** (`generateRandomPolicies`), recorded
+  merge by merge in the PROV-O description,
 - graph **consistency** can be verified: every merge node must satisfy
   `S(v) = ⊕ S(u), u ∈ pre(v)`,
 - version and merge **validity** can be checked against a rule set (SHACL shapes, an RDFS or an
@@ -149,22 +151,23 @@ Constraints: `versions >= branches + merges`, and `branches >= 2` when `merges >
 mvn compile exec:java -Dexec.args="--versions 40 --branches 5 --merges 6 --initial-quads 100 --evolution 12 --seed 7"
 ```
 
-For each policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) the demo:
+For each fixed policy (`UNION`, `INTERSECTION`, `SYMMETRIC_DIFFERENCE`) — plus a fourth run
+where **each merge draws its own policy at random** (exported to `random/`) — the demo:
 
-1. generates the graph from the parameters (the same seed produces the same DAG for
-   every policy — only the datasets downstream of the merges differ),
+1. generates the graph from the parameters (the same seed produces the same DAG in
+   every mode — only the datasets downstream of the merges differ),
 2. **exports each version in a different N-Quads file** and generates the **PROV-O graph
-   describing the version graph** (`provenance.ttl`),
+   describing the version graph** (`provenance.ttl`, which records the policy of every merge),
 3. **reloads the whole version graph from the generated `provenance.ttl`** (parsed with
-   Apache Jena — see §5.10): the DAG structure and the policy come from the PROV-O
-   description, the dataset S(v) of each version from its exported N-Quads file,
+   Apache Jena — see §5.10): the DAG structure and the per-merge policies come from the
+   PROV-O description, the dataset S(v) of each version from its exported N-Quads file,
 4. prints a summary and `Reloaded graph is consistent: true`.
 
 The **consistency assertions** (lossless round-trip, consistency of every policy, and detection
 of a tampered merge) are exercised by the JUnit tests in `src/test/java` — see §3.
 
 The export directory (`versions-export/` by default, or `--export-dir`) contains one
-sub-directory per demo policy (file names shown for the default parameters):
+sub-directory per policy mode (file names shown for the default parameters):
 
 ```
 versions-export/
@@ -176,7 +179,8 @@ versions-export/
 │   │                                             # --metagraph-rules, §7–§8)
 │   └── provenance.ttl                            # PROV-O description of the DAG (Turtle)
 ├── intersection/            (same layout)
-└── symmetric-difference/    (same layout)
+├── symmetric-difference/    (same layout)
+└── random/                  (same layout — each merge under its own randomly drawn policy)
 ```
 
 ---
@@ -187,7 +191,8 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 
 | Test | Role |
 |---|---|
-| `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless (datasets **and** PROV-O lifecycle instants) and the reloaded graph is consistent under the declared policy. (Formerly `Main.testPolicy`.) |
+| `PolicyRoundTripConsistencyTest` | Parameterized over the three policies: generate → export → reload from `provenance.ttl` (Jena) → assert the round-trip is lossless (datasets, per-merge policies **and** PROV-O lifecycle instants) and the reloaded graph is consistent, each merge under its own reloaded policy. (Formerly `Main.testPolicy`.) |
+| `RandomPolicyGenerationTest` | The **random per-merge policy** mode (§5.9): every merge draws and records its own policy, the DAG structure equals the fixed-policy runs of the same seed, the per-merge policies survive the PROV-O round-trip (a mixed history reloads with a `null` global policy and is checked merge by merge), and merges without a policy are rejected or reported inconsistent. |
 | `InconsistencyDetectionTest` | Builds a merge tampered with a parasitic quad (violating the global UNION policy), exports it, reloads it and asserts it is detected as inconsistent through the PROV-O round-trip. (Formerly `Main.testInconsistencyDetection`.) |
 | `VersionTimestampsTest` | The PROV-O lifecycle instants (§5.8): generated graphs obey the four generation/invalidation rules for many seeds, a hand-built diamond gets the expected instants, merging a version with its own child is rejected as unschedulable, and the consistency checker detects every kind of timestamp violation. |
 | `InferenceValidationTest` | Executable version of the worked micro-examples of [Version-history-inference-validation.md](Version-history-inference-validation.md) §12: each merge policy creating (`EMERGENT_VIOLATION`), propagating (`INHERITED_VIOLATION`) or repairing (`REPAIRED`) invalidity under SHACL (closed world) and RDFS/OWL (open world) rules, plus rule-language detection and the example rule files run against generated histories. |
@@ -201,13 +206,13 @@ The tests live in `src/test/java/benchmark/versioning/` and run with `mvn test`:
 | Class | Role |
 |---|---|
 | `Vocabulary` | Central definition of the RDF vocabulary (the `ex:`, `bsbm:`, `rdf:` namespaces and the three named graphs), and factory helpers building Jena `Node`s and `Quad`s. The single place where domain terms become Jena nodes. |
-| `Version` | A node `v ∈ V` of the DAG: an id, an immutable RDF dataset `S(v)` (a `Set<Quad>` of Jena quads), the list of its parents `pre(v)`, and its PROV-O lifecycle instants (`prov:generatedAtTime`, `prov:invalidatedAtTime`). |
+| `Version` | A node `v ∈ V` of the DAG: an id, an immutable RDF dataset `S(v)` (a `Set<Quad>` of Jena quads), the list of its parents `pre(v)`, the **merge policy** that produced it (`getMergePolicy()`, merge nodes only), and its PROV-O lifecycle instants (`prov:generatedAtTime`, `prov:invalidatedAtTime`). |
 | `VersionTimestamps` | Assigns the PROV-O lifecycle instants of a DAG (§5.8): every version generated strictly after its parents, all versions following a fork generated at the same instant (= the fork's invalidation instant), final versions still valid; also the schedulability check used by the generator before creating a merge. |
-| `MergePolicy` | The global operator `⊕`: `UNION`, `INTERSECTION` or `SYMMETRIC_DIFFERENCE`. Commutative and associative, hence n-ary merges are well defined. |
-| `VersionGraph` | Builds the DAG: root nodes, transition nodes (diff of additions/deletions) and merge nodes (strict application of `⊕`). |
-| `VersionConsistencyChecker` | Verifies the strict consistency of a graph (or of an arbitrary collection of versions) under a policy, including the PROV-O generation/invalidation rules of the lifecycle instants when present. |
+| `MergePolicy` | The merge operator `⊕`: `UNION`, `INTERSECTION` or `SYMMETRIC_DIFFERENCE`. Commutative and associative, hence n-ary merges are well defined. |
+| `VersionGraph` | Builds the DAG: root nodes, transition nodes (diff of additions/deletions) and merge nodes (strict application of `⊕` — the graph's global policy, or an explicit per-merge one). |
+| `VersionConsistencyChecker` | Verifies the strict consistency of a graph (or of an arbitrary collection of versions): each merge is checked against **its own recorded policy**, including the PROV-O generation/invalidation rules of the lifecycle instants when present. |
 | `VersionGraphWriter` | Writes the versions of a graph to disk with Jena: **one N-Quads file per version**, or a single human-readable report of all versions. |
-| `VersionGraphGenerator` | **Generates a version graph from parameters** (versions, branches, merges, initial dataset size, evolution per version, seed) under a given policy. |
+| `VersionGraphGenerator` | **Generates a version graph from parameters** (versions, branches, merges, initial dataset size, evolution per version, seed) under a given global policy (`generate`) or with a policy drawn at random per merge (`generateRandomPolicies`). |
 | `ProvOWriter` | Generates, with Jena, an **RDF graph describing the version graph using the W3C PROV-O ontology** (Turtle). |
 | `ProvOReader` | **Reads a version graph back from its PROV-O description** (`provenance.ttl`, parsed with Apache Jena) and the per-version N-Quads files. |
 | `Main` | Runnable demonstration program (generate → export → reload → summarize, optionally validate with `--rules`). |
@@ -284,32 +289,41 @@ Version v2 = graph.createTransition("V2", v0,
 
 ### 5.4. Create merge nodes (Case 3: |pre(v)| ≥ 2)
 
-The state of a merge is **strictly** the result of the global policy applied to the parents'
+The state of a merge is **strictly** the result of the merge's policy applied to the parents'
 datasets — no additions or deletions are allowed during a merge. Any number of parents ≥ 2 is
-supported (octopus merge).
+supported (octopus merge). The policy is recorded on the merge version
+(`Version.getMergePolicy()`) and ends up in the PROV-O description.
 
 ```java
-Version m1 = graph.createMerge("M1", List.of(v1, v2));              // binary merge
-Version m2 = graph.createMerge("M2", List.of(v1, v2, v0));          // octopus merge
+Version m1 = graph.createMerge("M1", List.of(v1, v2));              // binary merge, global policy
+Version m2 = graph.createMerge("M2", List.of(v1, v2, v0));          // octopus merge, global policy
+
+// Or override the graph's global policy for one merge (a graph built with
+// new VersionGraph(null) has no global policy and requires this form):
+Version m3 = graph.createMerge("M3", List.of(v1, v2), MergePolicy.INTERSECTION);
 ```
 
-`createMerge` throws `IllegalArgumentException` if fewer than 2 parents are given.
+`createMerge` throws `IllegalArgumentException` if fewer than 2 parents are given, and
+`IllegalStateException` when the two-argument form is used on a graph without a global policy.
 All creation methods throw `IllegalArgumentException` if the version id already exists.
 
 ### 5.5. Verify graph consistency
 
-A graph is **strictly consistent** iff every merge node's state equals the policy applied to
-its parents' states:
+A graph is **strictly consistent** iff every merge node's state equals **its own merge policy**
+applied to its parents' states. The policy is read from each merge (`Version.getMergePolicy()`,
+restored from `provenance.ttl` on reload) — not passed as a parameter — so histories mixing
+several per-merge policies are checked merge by merge:
 
 ```java
 boolean ok = VersionConsistencyChecker.isConsistent(graph);
 
-// Or check an arbitrary collection of versions against a policy (e.g. loaded from storage)
-boolean ok2 = VersionConsistencyChecker.isConsistent(versionsCollection, MergePolicy.UNION);
+// Or check an arbitrary collection of versions (e.g. reloaded from provenance.ttl)
+boolean ok2 = VersionConsistencyChecker.isConsistent(versionsCollection);
 ```
 
 When a violation is found, the checker prints a `[DEBUG_LOG]` message with the offending
-version id, the expected dataset and the actual dataset, and returns `false`.
+version id, the expected dataset and the actual dataset, and returns `false`. A merge version
+carrying no policy cannot be verified and is reported as inconsistent too.
 
 ### 5.6. Inspect a version
 
@@ -331,7 +345,8 @@ directory. Each file is named after the version id (sanitized), with the `.nq` e
 // Returns the list of files written, in topological order.
 List<Path> files = VersionGraphWriter.writeEachVersionToDirectory(graph, Path.of("export-dir"));
 
-// Also works with an arbitrary collection of versions and a policy
+// Also works with an arbitrary collection of versions and the global policy
+// (pass null when the merges each carry their own policy)
 VersionGraphWriter.writeEachVersionToDirectory(versionsCollection, MergePolicy.UNION, Path.of("export-dir"));
 
 // Or serialize a single version without touching the file system
@@ -346,6 +361,7 @@ followed by the full RDF dataset `S(v)` as sorted N-Quads lines. Example of `M1.
 # version: M1
 # global merge policy: UNION
 # kind: merge (2 parents)
+# merge policy: UNION
 # parents: V1, V2
 # quads: 2
 <http://example.org/offer1> <http://www4.wiwiss.fu-berlin.de/bizer/bsbm/v01/vocabulary/price> "42.0" <http://example.org/graph/offers> .
@@ -374,8 +390,8 @@ Mapping of the formal model onto PROV-O:
 | Version `v ∈ V` | `ver:<id> a prov:Entity` |
 | Edge `(u, v) ∈ A` | `ver:v prov:wasDerivedFrom ver:u` |
 | Transition node (`\|pre(v)\| = 1`) | `act:transition-<id> a prov:Activity ; prov:used ver:u ; prov:generated ver:v` and `ver:v prov:wasGeneratedBy act:transition-<id>` |
-| Merge node (`\|pre(v)\| ≥ 2`) | `act:merge-<id> a prov:Activity ; prov:used` all parents; `prov:wasAssociatedWith` the policy agent |
-| Global merge policy `⊕` | `agt:policy-<POLICY> a prov:SoftwareAgent` |
+| Merge node (`\|pre(v)\| ≥ 2`) | `act:merge-<id> a prov:Activity ; prov:used` all parents; `prov:wasAssociatedWith` the agent of **that merge's** policy |
+| Merge policy `⊕` (global, or per merge) | `agt:policy-<POLICY> a prov:SoftwareAgent` — one agent per policy used |
 | Root node (`\|pre(v)\| = 0`) | plain `prov:Entity` with no generation activity |
 | Generation instant of `v` | `ver:v prov:generatedAtTime "<t>"^^xsd:dateTime` |
 | Invalidation instant of `v` | `ver:v prov:invalidatedAtTime "<t'>"^^xsd:dateTime`, only when `v` has followers |
@@ -431,7 +447,12 @@ graph is neither hard-coded in Java nor read from a file:
 VersionGraphGenerator.Parameters params =
         new VersionGraphGenerator.Parameters(12, 3, 2, 20, 6, 42);
 
+// Fixed mode: the same global policy is applied to every merge.
 VersionGraph graph = VersionGraphGenerator.generate(params, MergePolicy.UNION);
+
+// Random mode: each merge draws its own policy (uniform over the three
+// policies, from a dedicated random stream — deterministic for a given seed).
+VersionGraph random = VersionGraphGenerator.generateRandomPolicies(params);
 ```
 
 Connection rules of the generated DAG:
@@ -453,12 +474,16 @@ Connection rules of the generated DAG:
   offers, reviews) Jena quads that rotate over the three named graphs.
 
 Transitions are named `V1..Vn` and merges `M1..Mm`, in creation order. **The state of merge nodes
-is never generated**: it is computed by applying the global policy to the parents' datasets.
+is never generated**: it is computed by applying the merge's policy — the global one, or its
+random draw — to the parents' datasets, and each merge records the policy it applied
+(`Version.getMergePolicy()`).
 
 The generation is **deterministic for a given seed**, and the DAG structure does not depend on the
-policy: two independent random streams are used, one for the structure (fork/branch/merge choices)
-and one for the data (deletion picks). The same parameters replayed under different policies
-therefore produce the same DAG — only the datasets downstream of the merges differ.
+policies: three independent random streams are used — one for the structure (fork/branch/merge
+choices), one for the data (deletion picks) and one for the per-merge policy draws of
+`generateRandomPolicies`. The same parameters replayed under a different fixed policy, or under
+random per-merge policies, therefore produce the same DAG — only the datasets downstream of the
+merges differ.
 
 ### 5.10. Read the version graph back from its PROV-O description
 
@@ -471,15 +496,16 @@ dataset S(v) of each version is loaded (with Jena) from its `<id>.nq` N-Quads fi
 // each version is read from its <id>.nq file in the same directory.
 ProvOReader.ProvenanceGraph loaded = ProvOReader.read(Path.of("versions-export/union"));
 
-List<Version> versions = loaded.versions();   // parents-first order
-MergePolicy policy     = loaded.policy();     // declared by the policy agent
+List<Version> versions = loaded.versions();   // parents-first order; each merge carries its policy
+MergePolicy policy     = loaded.policy();     // the single policy shared by every merge,
+                                              // or null when they mix per-merge policies
 
-boolean ok = VersionConsistencyChecker.isConsistent(versions, policy);
+boolean ok = VersionConsistencyChecker.isConsistent(versions);
 ```
 
-`ProvOReader.read` fails with an `IOException` if the provenance file, the policy agent or a version
-dataset file is missing, if a version derives from an entity not described in the file, or if the
-`prov:wasDerivedFrom` graph contains a cycle. Note that `prov:wasDerivedFrom` statements have set
+`ProvOReader.read` fails with an `IOException` if the provenance file, the policy agent of a merge
+or a version dataset file is missing, if a version derives from an entity not described in the
+file, or if the `prov:wasDerivedFrom` graph contains a cycle. Note that `prov:wasDerivedFrom` statements have set
 semantics, so a merge listing the same parent twice cannot be represented in (or read back from)
 PROV-O.
 
@@ -532,7 +558,7 @@ mvn compile exec:java -Dexec.mainClass=benchmark.versioning.InferenceValidationM
 | `--rules <file>` | The rule set: SHACL shapes or an RDFS/OWL ontology (Turtle/RDF). **Required.** | — |
 | `--language <l>` | `shacl` \| `rdfs` \| `owl` \| `auto`. | `auto` (detected from the namespaces) |
 | `--dir <dir>` | Directory to validate: either it contains `provenance.ttl` + `<id>.nq` files, or each of its sub-directories does (the per-policy layout written by `Main`). | `versions-export` |
-| `--policy <p>` | The **merge policy to test**: `union` \| `intersection` \| `symmetric-difference` (case-insensitive, `-` or `_`). Only the histories whose global merge policy — read from `provenance.ttl`, the authoritative description — is `<p>` are validated; matching none is a usage error. | validate every history found |
+| `--policy <p>` | The **merge policy to test**: `union` \| `intersection` \| `symmetric-difference` (case-insensitive, `-` or `_`). Only the histories whose global merge policy — read from `provenance.ttl`, the authoritative description — is `<p>` are validated; a history mixing per-merge policies (the `random/` export) has no global policy and matches no filter; matching none is a usage error. | validate every history found |
 | `--metagraph-rules <f>` | A **metagraph rule set** in native Jena rule syntax (`rules/metagraph.rules`, §8): re-derives the merge outcomes from `provenance.ttl` + the per-version verdicts (asserted as `mg:valid` facts), reports the agreement with the engine's classification, and writes the derived statements to `metagraph-<shacl\|rdfs\|owl>-infered.ttl`. | (none) |
 
 Exit code: `0` — every version valid, `1` — at least one violation (CI-friendly), `2` — usage
@@ -821,8 +847,9 @@ VersionGraphWriter.writeEachVersionToDirectory(graph, Path.of("export-dir"));
 ProvOWriter.writeToFile(graph, Path.of("export-dir/provenance.ttl"));
 
 // Reload the version graph from its PROV-O description (Apache Jena) and verify consistency
+// (each merge is checked against its own policy, restored from provenance.ttl)
 ProvOReader.ProvenanceGraph reloaded = ProvOReader.read(Path.of("export-dir"));
-System.out.println(VersionConsistencyChecker.isConsistent(reloaded.versions(), reloaded.policy()));
+System.out.println(VersionConsistencyChecker.isConsistent(reloaded.versions()));
 ```
 
 See `Main.java` for the full demonstration (several diverging branches, binary and octopus merges
